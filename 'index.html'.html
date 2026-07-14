@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Field Route Manifest — Agency Visit Planner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+  :root{
+    --ink:#17242E;
+    --ink-soft:#3E4C55;
+    --paper:#EEF1EC;
+    --paper-raised:#FFFFFF;
+    --line:#D7DED4;
+    --line-strong:#B9C4B5;
+    --route:#1F6F64;
+    --route-soft:#DCEEEA;
+    --route-dark:#0F4A42;
+    --visited:#C98A1B;
+    --visited-soft:#F6E7C9;
+    --pending:#B23B3B;
+    --pending-soft:#F5DEDC;
+    --virtual:#3D6FB4;
+    --virtual-soft:#DCE6F4;
+    --phone:#7A5AA8;
+    --phone-soft:#E7DFF3;
+    --muted:#697C71;
+    --radius:10px;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'Public Sans',sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3{font-family:'Space Grotesk',sans-serif;margin:0;color:var(--ink);}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  #app{max-width:1080px;margin:0 auto;padding:0 20px 60px;}
+
+  .topbar{
+    display:flex;justify-content:space-between;align-items:flex-end;
+    padding:28px 0 18px;border-bottom:2px solid var(--ink);margin-bottom:4px;
+  }
+  .brand-mark{display:flex;align-items:center;gap:12px;}
+  .brand-mark .badge{
+    width:40px;height:40px;border-radius:50%;background:var(--route);
+    color:#fff;display:flex;align-items:center;justify-content:center;
+    font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;
+    transform:rotate(-6deg);border:2px solid var(--ink);
+  }
+  .topbar h1{font-size:22px;letter-spacing:-0.02em;}
+  .topbar .sub{font-size:12.5px;color:var(--muted);margin-top:2px;font-family:'IBM Plex Mono',monospace;}
+  .year-pill{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--muted);text-align:right;}
+
+  .tabs{display:flex;gap:6px;margin:18px 0 22px;flex-wrap:wrap;}
+  .tab-btn{
+    font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:13.5px;
+    padding:9px 16px;border-radius:999px 999px 0 0;border:2px solid var(--ink);
+    border-bottom:none;background:var(--paper-raised);color:var(--ink-soft);
+    cursor:pointer;position:relative;top:2px;
+  }
+  .tab-btn.active{background:var(--ink);color:#fff;}
+  .tab-btn .count{
+    font-family:'IBM Plex Mono',monospace;font-weight:400;font-size:11px;
+    margin-left:6px;opacity:0.7;
+  }
+
+  .card{
+    background:var(--paper-raised);border:1.5px solid var(--line-strong);
+    border-radius:var(--radius);padding:18px 20px;margin-bottom:16px;
+  }
+  .card-flat{
+    background:var(--paper-raised);border:1px solid var(--line);
+    border-radius:var(--radius);
+  }
+  .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;}
+  .row-between{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;}
+
+  input[type=text],input[type=tel],input[type=date],select,textarea{
+    font-family:'Public Sans',sans-serif;font-size:13.5px;padding:8px 10px;
+    border:1.5px solid var(--line-strong);border-radius:7px;background:#fff;color:var(--ink);
+  }
+  input:focus,select:focus,textarea:focus{outline:2px solid var(--route);outline-offset:1px;}
+  label{font-size:11.5px;color:var(--muted);font-family:'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:.03em;display:block;margin-bottom:4px;}
+  .field{display:flex;flex-direction:column;gap:2px;}
+
+  button{
+    font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:13px;
+    padding:8px 14px;border-radius:7px;border:1.5px solid var(--ink);
+    background:#fff;color:var(--ink);cursor:pointer;
+  }
+  button:hover{background:var(--paper);}
+  button.primary{background:var(--route);color:#fff;border-color:var(--route-dark);}
+  button.primary:hover{background:var(--route-dark);}
+  button.ghost{border-color:transparent;background:transparent;padding:6px 8px;}
+  button.ghost:hover{background:var(--paper);}
+  button.danger{border-color:var(--pending);color:var(--pending);background:#fff;}
+  button.danger:hover{background:var(--pending-soft);}
+  button:disabled{opacity:.45;cursor:not-allowed;}
+  button.sm{padding:5px 10px;font-size:12px;}
+
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{
+    text-align:left;font-family:'IBM Plex Mono',monospace;font-size:10.5px;
+    text-transform:uppercase;letter-spacing:.04em;color:var(--muted);
+    padding:6px 8px;border-bottom:1.5px solid var(--ink);
+  }
+  td{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top;}
+  tr:hover td{background:var(--paper);}
+  .addr{color:var(--ink-soft);font-size:12.5px;}
+  .agency-name{font-weight:600;}
+
+  .stamp{
+    display:inline-flex;align-items:center;gap:5px;padding:3px 9px;
+    border-radius:999px;font-family:'IBM Plex Mono',monospace;font-size:11px;
+    font-weight:600;border:1.3px solid transparent;white-space:nowrap;
+  }
+  .stamp.visited-in-person{background:var(--visited-soft);color:#7A5510;border-color:var(--visited);}
+  .stamp.visited-virtual{background:var(--virtual-soft);color:#28477A;border-color:var(--virtual);}
+  .stamp.visited-phone{background:var(--phone-soft);color:#4C3778;border-color:var(--phone);}
+  .stamp.pending{background:var(--pending-soft);color:#7A2626;border-color:var(--pending);}
+  .dot{width:7px;height:7px;border-radius:50%;display:inline-block;}
+  .dot.visited-in-person{background:var(--visited);}
+  .dot.visited-virtual{background:var(--virtual);}
+  .dot.visited-phone{background:var(--phone);}
+  .dot.pending{background:var(--pending);}
+
+  .empty{
+    border:1.5px dashed var(--line-strong);border-radius:var(--radius);
+    padding:32px 20px;text-align:center;color:var(--muted);
+  }
+  .empty .empty-title{font-family:'Space Grotesk',sans-serif;color:var(--ink);font-weight:600;font-size:15px;margin-bottom:4px;}
+
+  .modal-backdrop{
+    position:fixed;inset:0;background:rgba(23,36,46,.45);
+    display:flex;align-items:center;justify-content:center;z-index:50;padding:20px;
+  }
+  .modal{
+    background:#fff;border-radius:12px;border:1.5px solid var(--ink);
+    padding:22px 24px;max-width:460px;width:100%;max-height:88vh;overflow:auto;
+  }
+  .modal h3{font-size:16px;margin-bottom:14px;}
+  .modal .field{margin-bottom:12px;}
+  .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;}
+
+  .route-card{
+    border:1.5px solid var(--line-strong);border-radius:var(--radius);
+    background:var(--paper-raised);padding:16px 18px;margin-bottom:14px;
+    border-left:5px solid var(--route);
+  }
+  .route-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;}
+  .route-title{font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:15.5px;}
+  .day-chip{
+    font-family:'IBM Plex Mono',monospace;font-size:10.5px;text-transform:uppercase;
+    background:var(--route-soft);color:var(--route-dark);padding:3px 9px;border-radius:999px;
+    letter-spacing:.03em;font-weight:600;
+  }
+  .stop-list{list-style:none;margin:12px 0 0;padding:0;}
+  .stop-item{
+    display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line);
+  }
+  .stop-num{
+    font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--muted);
+    width:20px;flex-shrink:0;
+  }
+  .stop-body{flex:1;min-width:0;}
+  .stop-name{font-weight:600;font-size:13.5px;}
+  .stop-addr{font-size:12px;color:var(--muted);}
+  .drag-handle{cursor:grab;color:var(--muted);padding:0 4px;}
+  .stop-item.dragging{opacity:.4;}
+
+  .metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px;}
+  .metric{background:var(--paper-raised);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;}
+  .metric .label{font-family:'IBM Plex Mono',monospace;font-size:10.5px;text-transform:uppercase;color:var(--muted);letter-spacing:.03em;}
+  .metric .value{font-family:'Space Grotesk',sans-serif;font-size:26px;font-weight:700;margin-top:4px;}
+  .progress-track{height:10px;border-radius:999px;background:var(--pending-soft);overflow:hidden;display:flex;margin-top:8px;}
+  .progress-seg{height:100%;}
+
+  .month-bars{display:flex;align-items:flex-end;gap:6px;height:90px;margin-top:10px;}
+  .month-bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;gap:4px;}
+  .month-bar{width:100%;background:var(--route);border-radius:3px 3px 0 0;min-height:2px;}
+  .month-label{font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:var(--muted);}
+
+  .toast{
+    position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
+    background:var(--ink);color:#fff;padding:10px 18px;border-radius:8px;
+    font-size:13px;font-family:'Public Sans',sans-serif;z-index:100;
+    box-shadow:0 4px 14px rgba(0,0,0,.25);
+  }
+  .search-input{min-width:220px;flex:1;}
+  .import-zone{
+    border:1.5px dashed var(--line-strong);border-radius:var(--radius);
+    padding:16px;text-align:center;color:var(--muted);font-size:12.5px;
+  }
+  .checkbox-row{display:flex;align-items:center;gap:8px;padding:7px 0;border-top:1px solid var(--line);}
+  .checkbox-row input{width:15px;height:15px;}
+  .agency-picker{max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:0 10px;}
+  .section-label{font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;color:var(--muted);letter-spacing:.04em;margin:18px 0 8px;}
+  .link-btn{background:none;border:none;color:var(--route);font-family:'IBM Plex Mono',monospace;font-size:12px;cursor:pointer;padding:0;text-decoration:underline;}
+  .banner{
+    background:var(--route-soft);border:1px solid var(--route);border-radius:8px;
+    padding:10px 14px;font-size:12.5px;color:var(--route-dark);margin-bottom:16px;
+  }
+  .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+
+  @media (max-width:640px){
+    #app{padding:0 12px 40px;}
+    .topbar{flex-direction:column;align-items:flex-start;gap:10px;padding:18px 0 14px;}
+    .year-pill{text-align:left;}
+    .tabs{overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;padding-bottom:2px;}
+    .tab-btn{flex-shrink:0;}
+    .card,.route-card{padding:14px;}
+    table{font-size:12px;}
+    th,td{padding:7px 5px;}
+    .modal{padding:18px;max-width:94vw;}
+    .metric-grid{grid-template-columns:repeat(2,1fr);}
+    button{min-height:38px;}
+    .row-between{align-items:stretch;}
+    .search-input{min-width:0;width:100%;}
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script>
+// ---------- state ----------
+const state = {
+  tab: 'agencies',
+  agencies: [],
+  routes: [],
+  visits: [],
+  editingRouteId: null,
+  agencySearch: '',
+  dashboardYear: new Date().getFullYear(),
+  loaded: false,
+  syncStatus: 'unconfigured', // unconfigured | connected | error | syncing
+  lastSyncedAt: null
+};
+
+const WEEKDAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+const VISIT_TYPES = [
+  {id:'in-person', label:'In person', color:'visited-in-person'},
+  {id:'virtual', label:'Virtual', color:'visited-virtual'},
+  {id:'phone', label:'Phone call', color:'visited-phone'}
+];
+
+function uid(){ return Math.random().toString(36).slice(2,10) + Date.now().toString(36).slice(-4); }
+
+// ---------- storage ----------
+// Data is cached in this browser's localStorage (works instantly, per-device)
+// and mirrored to a Google Sheet via a small Apps Script endpoint (works across devices).
+// See Settings tab to connect the endpoint.
+function getEndpoint(){
+  try{ return localStorage.getItem('avp_endpoint') || ''; }catch(e){ return ''; }
+}
+function setEndpoint(url){
+  try{ localStorage.setItem('avp_endpoint', url); }catch(e){}
+}
+function localGet(key){
+  try{ const v = localStorage.getItem('avp_'+key); return v ? JSON.parse(v) : null; }catch(e){ return null; }
+}
+function localSet(key, value){
+  try{ localStorage.setItem('avp_'+key, JSON.stringify(value)); }catch(e){}
+}
+
+async function remoteGet(key){
+  const endpoint = getEndpoint();
+  if(!endpoint) return null;
+  const res = await fetch(endpoint + '?key=' + encodeURIComponent(key), { method:'GET' });
+  if(!res.ok) throw new Error('Bad response');
+  const data = await res.json();
+  return data.value != null ? JSON.parse(data.value) : null;
+}
+async function remoteSet(key, value){
+  const endpoint = getEndpoint();
+  if(!endpoint) return false;
+  const res = await fetch(endpoint, {
+    method:'POST',
+    headers:{ 'Content-Type':'text/plain;charset=utf-8' }, // text/plain avoids a CORS preflight Apps Script can't answer
+    body: JSON.stringify({ key, value: JSON.stringify(value) })
+  });
+  if(!res.ok) throw new Error('Bad response');
+  return true;
+}
+
+async function loadState(){
+  const endpoint = getEndpoint();
+  const keys = ['agencies','routes','visits'];
+  if(endpoint){
+    state.syncStatus = 'syncing';
+    try{
+      const [a, r, v] = await Promise.all(keys.map(remoteGet));
+      state.agencies = a || [];
+      state.routes = r || [];
+      state.visits = v || [];
+      keys.forEach(k => localSet(k, state[k]));
+      state.syncStatus = 'connected';
+      state.lastSyncedAt = new Date();
+    }catch(e){
+      state.agencies = localGet('agencies') || [];
+      state.routes = localGet('routes') || [];
+      state.visits = localGet('visits') || [];
+      state.syncStatus = 'error';
+    }
+  } else {
+    state.agencies = localGet('agencies') || [];
+    state.routes = localGet('routes') || [];
+    state.visits = localGet('visits') || [];
+    state.syncStatus = 'unconfigured';
+  }
+  state.loaded = true;
+  render();
+}
+
+async function persist(key, value){
+  localSet(key, value); // always save locally first so nothing is ever lost
+  const endpoint = getEndpoint();
+  if(!endpoint){ render(); return; }
+  try{
+    await remoteSet(key, value);
+    state.syncStatus = 'connected';
+    state.lastSyncedAt = new Date();
+  }catch(e){
+    state.syncStatus = 'error';
+    showToast('Saved on this device — could not reach shared storage');
+  }
+  render();
+}
+const saveAgencies = () => persist('agencies', state.agencies);
+const saveRoutes = () => persist('routes', state.routes);
+const saveVisits = () => persist('visits', state.visits);
+
+async function syncNow(){
+  if(!getEndpoint()){ showToast('Add your Apps Script URL first'); return; }
+  state.syncStatus = 'syncing'; render();
+  try{
+    await Promise.all([
+      remoteSet('agencies', state.agencies),
+      remoteSet('routes', state.routes),
+      remoteSet('visits', state.visits)
+    ]);
+    state.syncStatus = 'connected';
+    state.lastSyncedAt = new Date();
+    showToast('Synced');
+  }catch(e){
+    state.syncStatus = 'error';
+    showToast('Could not reach shared storage — check the URL and your connection');
+  }
+  render();
+}
+
+function showToast(msg){
+  const root = document.getElementById('toast-root');
+  root.innerHTML = '<div class="toast">'+escapeHtml(msg)+'</div>';
+  setTimeout(()=>{ root.innerHTML=''; }, 2600);
+}
+
+
+function escapeHtml(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ---------- derived helpers ----------
+function agencyById(id){ return state.agencies.find(a => a.id === id); }
+
+function visitsForAgencyYear(agencyId, year){
+  return state.visits.filter(v => v.agencyId === agencyId && new Date(v.date).getFullYear() === year);
+}
+function lastVisit(agencyId){
+  const vs = state.visits.filter(v => v.agencyId === agencyId).sort((a,b)=> new Date(b.date)-new Date(a.date));
+  return vs[0] || null;
+}
+function yearStats(year){
+  const total = state.agencies.length;
+  const visitedIds = new Set(state.visits.filter(v => new Date(v.date).getFullYear() === year).map(v=>v.agencyId));
+  const visitedCount = [...visitedIds].filter(id => agencyById(id)).length;
+  const pct = total ? Math.round((visitedCount/total)*1000)/10 : 0;
+  const byType = {'in-person':0,'virtual':0,'phone':0};
+  state.visits.filter(v => new Date(v.date).getFullYear() === year).forEach(v => { byType[v.type] = (byType[v.type]||0)+1; });
+  return { total, visitedCount, pct, byType, visitedIds };
+}
+
+// ---------- CSV import ----------
+function normalizeHeader(h){ return h.toLowerCase().replace(/[^a-z]/g,''); }
+function mapRow(row){
+  const out = {name:'', address:'', principal:'', phone:''};
+  Object.keys(row).forEach(key => {
+    const nk = normalizeHeader(key);
+    const val = (row[key]||'').toString().trim();
+    if(!val) return;
+    if(['name','agency','agencyname','organization','org'].includes(nk)) out.name = val;
+    else if(['address','addr','location','street','fulladdress'].includes(nk)) out.address = val;
+    else if(['principal','principalname','director','contact','contactname'].includes(nk)) out.principal = val;
+    else if(['phone','phonenumber','telephone','tel','number'].includes(nk)) out.phone = val;
+  });
+  return out;
+}
+function handleCsvFile(file){
+  Papa.parse(file, {
+    header:true, skipEmptyLines:true,
+    complete: function(results){
+      let added = 0, skipped = 0;
+      results.data.forEach(row => {
+        const m = mapRow(row);
+        if(!m.name || !m.address){ skipped++; return; }
+        state.agencies.push({ id: uid(), name:m.name, address:m.address, principal:m.principal, phone:m.phone, createdAt: new Date().toISOString() });
+        added++;
+      });
+      saveAgencies();
+      showToast(added + ' agencies imported' + (skipped ? ', ' + skipped + ' rows skipped (missing name/address)' : ''));
+      render();
+    },
+    error: function(){ showToast('Could not read that file — check it is a CSV.'); }
+  });
+}
+
+// ---------- map export helpers ----------
+function appleMapsUrlSingle(address){
+  return 'https://maps.apple.com/?daddr=' + encodeURIComponent(address) + '&dirflg=d';
+}
+function appleMapsUrlMultiStop(addresses){
+  const joined = addresses.map(a => encodeURIComponent(a)).join('+to:');
+  return 'https://maps.apple.com/?daddr=' + joined + '&dirflg=d';
+}
+function googleMapsUrlMultiStop(addresses){
+  if(addresses.length === 1) return 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(addresses[0]);
+  const origin = addresses[0];
+  const destination = addresses[addresses.length-1];
+  const waypoints = addresses.slice(1,-1).map(a=>encodeURIComponent(a)).join('|');
+  let url = 'https://www.google.com/maps/dir/?api=1&origin=' + encodeURIComponent(origin) + '&destination=' + encodeURIComponent(destination);
+  if(waypoints) url += '&waypoints=' + waypoints;
+  return url;
+}
+function verifyOnMapUrl(address){
+  return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(address);
+}
+
+// ---------- rendering ----------
+function render(){
+  const app = document.getElementById('app');
+  if(!state.loaded){ app.innerHTML = '<div style="padding:60px 0;text-align:center;color:var(--muted)">Loading manifest…</div>'; return; }
+  app.innerHTML = renderTopbar() + renderTabs() + renderBody();
+  attachGlobalListeners();
+}
+
+function renderTopbar(){
+  const statusMap = {
+    connected: {label:'Synced', color:'visited-in-person'},
+    error: {label:'Sync error', color:'pending'},
+    syncing: {label:'Syncing…', color:'visited-virtual'},
+    unconfigured: {label:'Local only', color:'pending'}
+  };
+  const s = statusMap[state.syncStatus] || statusMap.unconfigured;
+  return '<div class="topbar">'+
+    '<div class="brand-mark">'+
+      '<div class="badge">RTE</div>'+
+      '<div><h1>Field route manifest</h1><div class="sub">agency visit routing &amp; coverage log</div></div>'+
+    '</div>'+
+    '<div class="year-pill">'+state.agencies.length+' agencies on file<br>'+state.routes.length+' saved routes<br>'+
+      '<span class="stamp '+s.color+'" style="margin-top:4px;"><span class="dot '+s.color+'"></span>'+s.label+'</span>'+
+    '</div>'+
+  '</div>';
+}
+
+function renderTabs(){
+  const tabs = [
+    {id:'agencies', label:'Agencies', count: state.agencies.length},
+    {id:'routes', label:'Routes', count: state.routes.length},
+    {id:'dashboard', label:'Coverage', count: null},
+    {id:'settings', label:'Settings', count: null}
+  ];
+  return '<div class="tabs">' + tabs.map(t =>
+    '<button class="tab-btn '+(state.tab===t.id?'active':'')+'" data-action="set-tab" data-tab="'+t.id+'">'+
+      t.label + (t.count!=null ? '<span class="count">'+t.count+'</span>' : '') +
+    '</button>'
+  ).join('') + '</div>';
+}
+
+function renderBody(){
+  if(state.editingRouteId !== null) return renderRouteEditor();
+  if(state.tab === 'agencies') return renderAgenciesTab();
+  if(state.tab === 'routes') return renderRoutesTab();
+  if(state.tab === 'dashboard') return renderDashboardTab();
+  if(state.tab === 'settings') return renderSettingsTab();
+  return '';
+}
+
+// ---- Agencies tab ----
+function renderAgenciesTab(){
+  const q = state.agencySearch.trim().toLowerCase();
+  const list = state.agencies.filter(a =>
+    !q || a.name.toLowerCase().includes(q) || a.address.toLowerCase().includes(q) || (a.principal||'').toLowerCase().includes(q)
+  ).sort((a,b)=>a.name.localeCompare(b.name));
+
+  let html = '<div class="card-flat" style="padding:16px 18px;margin-bottom:16px;">'+
+    '<div class="row-between">'+
+      '<div class="row">'+
+        '<input class="search-input" type="text" id="agency-search" placeholder="Search agencies by name, address, or principal" value="'+escapeHtml(state.agencySearch)+'">'+
+      '</div>'+
+      '<div class="row">'+
+        '<label style="display:inline-block;margin:0;"><button class="ghost" data-action="pick-csv">Import CSV</button></label>'+
+        '<input type="file" id="csv-input" accept=".csv" style="display:none;">'+
+        '<button class="primary" data-action="new-agency">Add agency</button>'+
+      '</div>'+
+    '</div>'+
+    '<div style="margin-top:10px;" class="addr">CSV columns recognized: name / agency, address, principal / director, phone / telephone — any order, header names are flexible.</div>'+
+  '</div>';
+
+  if(list.length === 0){
+    html += '<div class="empty"><div class="empty-title">No agencies yet</div>'+
+      'Add one manually or import a CSV to get your list started.</div>';
+    return html;
+  }
+
+  html += '<div class="table-scroll"><table><thead><tr><th>Agency</th><th>Principal</th><th>Phone</th><th>Last visit</th><th></th></tr></thead><tbody>';
+  list.forEach(a => {
+    const lv = lastVisit(a.id);
+    const vt = lv ? VISIT_TYPES.find(v=>v.id===lv.type) : null;
+    html += '<tr>'+
+      '<td><div class="agency-name">'+escapeHtml(a.name)+'</div><div class="addr">'+escapeHtml(a.address)+'</div></td>'+
+      '<td>'+escapeHtml(a.principal||'—')+'</td>'+
+      '<td class="mono">'+escapeHtml(a.phone||'—')+'</td>'+
+      '<td>'+(lv ? '<span class="stamp '+vt.color+'"><span class="dot '+vt.color+'"></span>'+vt.label+'</span><div class="addr" style="margin-top:4px;">'+new Date(lv.date).toLocaleDateString()+'</div>' : '<span class="stamp pending"><span class="dot pending"></span>not yet visited</span>')+'</td>'+
+      '<td style="white-space:nowrap;">'+
+        '<button class="ghost sm" data-action="mark-visited" data-id="'+a.id+'">Log visit</button> '+
+        '<button class="ghost sm" data-action="edit-agency" data-id="'+a.id+'">Edit</button> '+
+        '<button class="ghost sm" data-action="delete-agency" data-id="'+a.id+'">Delete</button>'+
+      '</td>'+
+    '</tr>';
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// ---- Routes tab ----
+function renderRoutesTab(){
+  let html = '<div class="row-between" style="margin-bottom:14px;">'+
+    '<div class="addr">Build a route for a day of the week, then export it straight to your maps app.</div>'+
+    '<button class="primary" data-action="new-route">New route</button>'+
+  '</div>';
+
+  if(state.routes.length === 0){
+    html += '<div class="empty"><div class="empty-title">No routes yet</div>Create a route and assign agencies to a day of the week.</div>';
+    return html;
+  }
+
+  const byDay = {};
+  state.routes.forEach(r => { (byDay[r.day] = byDay[r.day]||[]).push(r); });
+  const dayOrder = WEEKDAYS.filter(d => byDay[d]);
+  Object.keys(byDay).forEach(d => { if(!dayOrder.includes(d)) dayOrder.push(d); });
+
+  dayOrder.forEach(day => {
+    html += '<div class="section-label">'+escapeHtml(day)+'</div>';
+    byDay[day].forEach(r => { html += renderRouteCard(r); });
+  });
+  return html;
+}
+
+function renderRouteCard(r){
+  const stops = r.agencyIds.map(id => agencyById(id)).filter(Boolean);
+  const year = state.dashboardYear;
+  let html = '<div class="route-card">'+
+    '<div class="route-head">'+
+      '<div><div class="route-title">'+escapeHtml(r.name)+'</div>'+
+      '<div class="addr">'+stops.length+' stop'+(stops.length===1?'':'s')+(r.date ? ' · '+new Date(r.date+'T00:00:00').toLocaleDateString() : '')+'</div></div>'+
+      '<div class="row">'+
+        '<span class="day-chip">'+escapeHtml(r.day)+'</span>'+
+        '<button class="ghost sm" data-action="edit-route" data-id="'+r.id+'">Edit</button>'+
+        '<button class="ghost sm" data-action="duplicate-route" data-id="'+r.id+'">Duplicate</button>'+
+        '<button class="ghost sm" data-action="delete-route" data-id="'+r.id+'">Delete</button>'+
+      '</div>'+
+    '</div>';
+
+  if(stops.length){
+    html += '<ul class="stop-list">';
+    stops.forEach((a,i) => {
+      const visited = visitsForAgencyYear(a.id, year).length > 0;
+      html += '<li class="stop-item">'+
+        '<span class="stop-num">'+(i+1)+'.</span>'+
+        '<span class="dot '+(visited?'visited-in-person':'pending')+'" title="'+(visited?'Visited this year':'Not visited this year')+'"></span>'+
+        '<div class="stop-body"><div class="stop-name">'+escapeHtml(a.name)+'</div><div class="stop-addr">'+escapeHtml(a.address)+'</div></div>'+
+        '<button class="ghost sm" data-action="mark-visited" data-id="'+a.id+'">Log</button>'+
+      '</li>';
+    });
+    html += '</ul>';
+
+    const addresses = stops.map(a=>a.address);
+    html += '<div class="row" style="margin-top:14px;">'+
+      '<button class="primary" data-action="export-apple" data-id="'+r.id+'">Open route in Apple Maps</button>'+
+      '<button data-action="export-google" data-id="'+r.id+'">Open route in Google Maps</button>'+
+      '<button class="ghost" data-action="copy-stops" data-id="'+r.id+'">Copy stop list</button>'+
+    '</div>';
+    if(stops.length > 8){
+      html += '<div class="addr" style="margin-top:6px;">Long routes may exceed the URL length a map app allows — if the link fails to open, use "Copy stop list" and paste the stops into your maps app instead.</div>';
+    }
+  } else {
+    html += '<div class="addr" style="margin-top:10px;">No stops assigned yet.</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+// ---- Route editor ----
+function renderRouteEditor(){
+  const r = state.routes.find(x => x.id === state.editingRouteId);
+  if(!r) { state.editingRouteId = null; return renderRoutesTab(); }
+  const assigned = new Set(r.agencyIds);
+  const sorted = [...state.agencies].sort((a,b)=>a.name.localeCompare(b.name));
+
+  let html = '<div class="row" style="margin-bottom:14px;">'+
+    '<button class="ghost" data-action="close-route-editor">&larr; Back to routes</button>'+
+  '</div>';
+
+  html += '<div class="card">'+
+    '<div class="row" style="margin-bottom:14px;">'+
+      '<div class="field" style="flex:2;min-width:200px;"><label>Route name</label><input type="text" id="route-name" value="'+escapeHtml(r.name)+'"></div>'+
+      '<div class="field"><label>Day of week</label><select id="route-day">'+WEEKDAYS.map(d=>'<option value="'+d+'" '+(d===r.day?'selected':'')+'>'+d+'</option>').join('')+'</select></div>'+
+      '<div class="field"><label>Specific date (optional)</label><input type="date" id="route-date" value="'+(r.date||'')+'"></div>'+
+    '</div>'+
+    '<button class="primary" data-action="save-route-meta">Save details</button>'+
+  '</div>';
+
+  html += '<div class="row-between" style="align-items:flex-start;gap:20px;flex-wrap:wrap;">';
+
+  // stop order
+  html += '<div style="flex:1;min-width:280px;">'+
+    '<div class="section-label">Stops in order ('+r.agencyIds.length+')</div>';
+  if(r.agencyIds.length === 0){
+    html += '<div class="empty">Select agencies from the list on the right to add stops.</div>';
+  } else {
+    html += '<ul class="stop-list" id="stop-order-list">';
+    r.agencyIds.forEach((id,i) => {
+      const a = agencyById(id);
+      if(!a) return;
+      html += '<li class="stop-item" draggable="true" data-index="'+i+'">'+
+        '<span class="drag-handle">::</span>'+
+        '<span class="stop-num">'+(i+1)+'.</span>'+
+        '<div class="stop-body"><div class="stop-name">'+escapeHtml(a.name)+'</div><div class="stop-addr">'+escapeHtml(a.address)+'</div></div>'+
+        '<button class="ghost sm" data-action="move-stop-up" data-index="'+i+'" '+(i===0?'disabled':'')+'>&uarr;</button>'+
+        '<button class="ghost sm" data-action="move-stop-down" data-index="'+i+'" '+(i===r.agencyIds.length-1?'disabled':'')+'>&darr;</button>'+
+        '<button class="ghost sm" data-action="remove-stop" data-index="'+i+'">Remove</button>'+
+      '</li>';
+    });
+    html += '</ul>';
+  }
+  html += '</div>';
+
+  // agency picker
+  html += '<div style="flex:1;min-width:280px;">'+
+    '<div class="section-label">Add agencies to this route</div>'+
+    '<input type="text" id="route-agency-search" placeholder="Search agencies…" style="width:100%;margin-bottom:8px;">'+
+    '<div class="agency-picker" id="route-agency-picker">';
+  sorted.forEach(a => {
+    html += '<div class="checkbox-row" data-name="'+escapeHtml(a.name.toLowerCase())+'">'+
+      '<input type="checkbox" data-action="toggle-stop" data-id="'+a.id+'" '+(assigned.has(a.id)?'checked':'')+'>'+
+      '<div><div class="stop-name">'+escapeHtml(a.name)+'</div><div class="stop-addr">'+escapeHtml(a.address)+'</div></div>'+
+    '</div>';
+  });
+  if(sorted.length === 0) html += '<div class="addr" style="padding:12px 0;">No agencies on file yet — add some from the Agencies tab.</div>';
+  html += '</div></div>';
+
+  html += '</div>';
+  return html;
+}
+
+// ---- Settings tab ----
+function renderSettingsTab(){
+  const endpoint = getEndpoint();
+  const statusMap = {
+    connected: {label:'Connected', color:'visited-in-person'},
+    error: {label:'Connection error', color:'pending'},
+    syncing: {label:'Syncing…', color:'visited-virtual'},
+    unconfigured: {label:'Not connected', color:'pending'}
+  };
+  const s = statusMap[state.syncStatus] || statusMap.unconfigured;
+
+  let html = '<div class="card">'+
+    '<div class="row-between"><h3 style="font-size:15px;">Cross-device sync</h3>'+
+      '<span class="stamp '+s.color+'"><span class="dot '+s.color+'"></span>'+s.label+'</span>'+
+    '</div>'+
+    '<div class="addr" style="margin:10px 0 14px;">Connect this app to a Google Sheet so your agencies, routes, and visit log stay the same on your phone and your computer. Takes about 10 minutes, one time.</div>'+
+    '<div class="field"><label>Apps Script web app URL</label>'+
+      '<input type="text" id="endpoint-input" style="width:100%;" placeholder="https://script.google.com/macros/s/.../exec" value="'+escapeHtml(endpoint)+'"></div>'+
+    '<div class="row" style="margin-top:10px;">'+
+      '<button class="primary" data-action="save-endpoint">Save and connect</button>'+
+      '<button data-action="sync-now" '+(endpoint?'':'disabled')+'>Sync now</button>'+
+    '</div>'+
+    (state.lastSyncedAt ? '<div class="addr" style="margin-top:8px;">Last synced '+state.lastSyncedAt.toLocaleTimeString()+'</div>' : '')+
+  '</div>';
+
+  html += '<div class="card">'+
+    '<h3 style="font-size:14px;margin-bottom:8px;">One-time setup</h3>'+
+    '<ol class="addr" style="padding-left:18px;line-height:1.7;">'+
+      '<li>Go to <span class="mono">sheets.google.com</span> and create a new blank spreadsheet.</li>'+
+      '<li>Open <b>Extensions &rarr; Apps Script</b>, delete the placeholder code, and paste in the script provided with this app.</li>'+
+      '<li>Click <b>Deploy &rarr; New deployment</b>, choose type <b>Web app</b>, set "Execute as" to <b>Me</b> and "Who has access" to <b>Anyone</b>, then click Deploy.</li>'+
+      '<li>Authorize the permissions Google asks for (it will warn this is an unverified app — that\u2019s expected for a script you wrote yourself).</li>'+
+      '<li>Copy the web app URL it gives you, paste it above, and click "Save and connect".</li>'+
+    '</ol>'+
+  '</div>';
+
+  html += '<div class="card">'+
+    '<h3 style="font-size:14px;margin-bottom:8px;">How this works</h3>'+
+    '<div class="addr" style="line-height:1.6;">Every change is saved instantly on this device, then mirrored to your Google Sheet. Open the same web app URL on another device and it will pull the same data. If you lose signal, changes stay saved on this device — hit "Sync now" once you\u2019re back online to push anything that didn\u2019t make it through.</div>'+
+  '</div>';
+  return html;
+}
+
+// ---- Dashboard tab ----
+function renderDashboardTab(){
+  const year = state.dashboardYear;
+  const s = yearStats(year);
+  const years = [];
+  const nowY = new Date().getFullYear();
+  for(let y = nowY+1; y >= nowY-4; y--) years.push(y);
+
+  let html = '<div class="row-between" style="margin-bottom:16px;">'+
+    '<div class="field"><label>Calendar year</label><select id="dash-year">'+years.map(y=>'<option value="'+y+'" '+(y===year?'selected':'')+'>'+y+'</option>').join('')+'</select></div>'+
+  '</div>';
+
+  if(s.total === 0){
+    html += '<div class="empty"><div class="empty-title">Nothing to measure yet</div>Add agencies to start tracking coverage.</div>';
+    return html;
+  }
+
+  html += '<div class="metric-grid">'+
+    '<div class="metric"><div class="label">Agencies visited</div><div class="value">'+s.pct+'%</div>'+
+      '<div class="progress-track">'+
+        '<div class="progress-seg" style="width:'+s.pct+'%;background:var(--visited);"></div>'+
+      '</div>'+
+      '<div class="addr" style="margin-top:6px;">'+s.visitedCount+' of '+s.total+' agencies reached in '+year+'</div>'+
+    '</div>'+
+    '<div class="metric"><div class="label">In person</div><div class="value">'+s.byType['in-person']+'</div><div class="addr">visits logged</div></div>'+
+    '<div class="metric"><div class="label">Virtual</div><div class="value">'+s.byType['virtual']+'</div><div class="addr">visits logged</div></div>'+
+    '<div class="metric"><div class="label">Phone</div><div class="value">'+s.byType['phone']+'</div><div class="addr">visits logged</div></div>'+
+  '</div>';
+
+  // month breakdown
+  const monthCounts = new Array(12).fill(0);
+  state.visits.filter(v => new Date(v.date).getFullYear() === year).forEach(v => {
+    monthCounts[new Date(v.date).getMonth()]++;
+  });
+  const maxM = Math.max(1, ...monthCounts);
+  html += '<div class="card">'+
+    '<div class="section-label" style="margin-top:0;">Visits by month</div>'+
+    '<div class="month-bars">'+
+      monthCounts.map((c,i) => {
+        const h = Math.round((c/maxM)*100);
+        return '<div class="month-bar-wrap"><div class="mono" style="font-size:10px;color:var(--muted);">'+(c||'')+'</div>'+
+          '<div class="month-bar" style="height:'+Math.max(h,c>0?4:0)+'%;"></div>'+
+          '<div class="month-label">'+['J','F','M','A','M','J','J','A','S','O','N','D'][i]+'</div></div>';
+      }).join('')+
+    '</div>'+
+  '</div>';
+
+  // not yet visited
+  const notVisited = state.agencies.filter(a => !s.visitedIds.has(a.id)).sort((a,b)=>a.name.localeCompare(b.name));
+  html += '<div class="section-label">Not yet visited in '+year+' ('+notVisited.length+')</div>';
+  if(notVisited.length === 0){
+    html += '<div class="banner">Every agency on file has been reached in '+year+'.</div>';
+  } else {
+    html += '<div class="table-scroll"><table><thead><tr><th>Agency</th><th>Principal</th><th>Phone</th><th></th></tr></thead><tbody>';
+    notVisited.forEach(a => {
+      html += '<tr><td><div class="agency-name">'+escapeHtml(a.name)+'</div><div class="addr">'+escapeHtml(a.address)+'</div></td>'+
+        '<td>'+escapeHtml(a.principal||'—')+'</td><td class="mono">'+escapeHtml(a.phone||'—')+'</td>'+
+        '<td><button class="ghost sm" data-action="mark-visited" data-id="'+a.id+'">Log visit</button></td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+  return html;
+}
+
+// ---------- modals ----------
+function openAgencyModal(agencyId){
+  const editing = agencyId ? agencyById(agencyId) : null;
+  const root = document.getElementById('modal-root');
+  root.innerHTML = '<div class="modal-backdrop">'+
+    '<div class="modal">'+
+      '<h3>'+(editing ? 'Edit agency' : 'Add agency')+'</h3>'+
+      '<div class="field"><label>Agency name</label><input type="text" id="f-name" value="'+escapeHtml(editing?editing.name:'')+'"></div>'+
+      '<div class="field"><label>Address</label><input type="text" id="f-address" value="'+escapeHtml(editing?editing.address:'')+'" placeholder="Street, city, state, zip"></div>'+
+      '<div class="field"><label>Principal name</label><input type="text" id="f-principal" value="'+escapeHtml(editing?editing.principal:'')+'"></div>'+
+      '<div class="field"><label>Phone number</label><input type="tel" id="f-phone" value="'+escapeHtml(editing?editing.phone:'')+'"></div>'+
+      '<div class="modal-actions">'+
+        '<button data-action="close-modal">Cancel</button>'+
+        '<button class="primary" data-action="save-agency" data-id="'+(editing?editing.id:'')+'">'+(editing?'Save changes':'Add agency')+'</button>'+
+      '</div>'+
+    '</div>'+
+  '</div>';
+  document.getElementById('f-name').focus();
+}
+
+function openVisitModal(agencyId){
+  const a = agencyById(agencyId);
+  if(!a) return;
+  const today = new Date().toISOString().slice(0,10);
+  const root = document.getElementById('modal-root');
+  root.innerHTML = '<div class="modal-backdrop">'+
+    '<div class="modal">'+
+      '<h3>Log visit — '+escapeHtml(a.name)+'</h3>'+
+      '<div class="field"><label>Date</label><input type="date" id="v-date" value="'+today+'"></div>'+
+      '<div class="field"><label>Visit type</label><select id="v-type">'+
+        VISIT_TYPES.map(t=>'<option value="'+t.id+'">'+t.label+'</option>').join('')+
+      '</select></div>'+
+      '<div class="section-label" style="margin-top:0;">Recent visits to this agency</div>'+
+      renderVisitHistory(a.id)+
+      '<div class="modal-actions">'+
+        '<button data-action="close-modal">Cancel</button>'+
+        '<button class="primary" data-action="save-visit" data-id="'+a.id+'">Log visit</button>'+
+      '</div>'+
+    '</div>'+
+  '</div>';
+}
+let pendingConfirmYes = null;
+function showConfirmModal(message, onYes){
+  pendingConfirmYes = onYes;
+  const root = document.getElementById('modal-root');
+  root.innerHTML = '<div class="modal-backdrop">'+
+    '<div class="modal" style="max-width:360px;">'+
+      '<h3>Are you sure?</h3>'+
+      '<div class="addr" style="font-size:13px;margin-bottom:4px;">'+escapeHtml(message)+'</div>'+
+      '<div class="modal-actions">'+
+        '<button data-action="confirm-no">Cancel</button>'+
+        '<button class="danger" data-action="confirm-yes">Delete</button>'+
+      '</div>'+
+    '</div>'+
+  '</div>';
+}
+
+function renderVisitHistory(agencyId){
+  const vs = state.visits.filter(v=>v.agencyId===agencyId).sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,5);
+  if(vs.length===0) return '<div class="addr">No visits logged yet.</div>';
+  return vs.map(v => {
+    const t = VISIT_TYPES.find(x=>x.id===v.type);
+    return '<div class="row-between" style="padding:4px 0;">'+
+      '<span class="stamp '+t.color+'"><span class="dot '+t.color+'"></span>'+t.label+'</span>'+
+      '<span class="addr">'+new Date(v.date).toLocaleDateString()+'</span>'+
+      '<button class="ghost sm" data-action="delete-visit" data-id="'+v.id+'" data-agency="'+agencyId+'">Remove</button>'+
+    '</div>';
+  }).join('');
+}
+
+// ---------- actions ----------
+function attachGlobalListeners(){
+  document.body.onclick = onGlobalClick;
+  document.body.oninput = onGlobalInput;
+  document.body.onchange = onGlobalChange;
+  const csvInput = document.getElementById('csv-input');
+  if(csvInput) csvInput.onchange = (e) => { if(e.target.files[0]) handleCsvFile(e.target.files[0]); e.target.value=''; };
+  setupDragReorder();
+}
+
+function onGlobalChange(e){
+  const t = e.target;
+  if(t.id === 'dash-year'){ state.dashboardYear = parseInt(t.value,10); render(); }
+  if(t.id === 'route-agency-search'){
+    const q = t.value.toLowerCase();
+    document.querySelectorAll('#route-agency-picker .checkbox-row').forEach(row => {
+      row.style.display = row.dataset.name.includes(q) ? '' : 'none';
+    });
+  }
+}
+
+function onGlobalInput(e){
+  const t = e.target;
+  if(t.id === 'agency-search'){ state.agencySearch = t.value; render(); document.getElementById('agency-search').focus(); document.getElementById('agency-search').setSelectionRange(t.value.length,t.value.length); }
+  if(t.id === 'route-agency-search'){
+    const q = t.value.toLowerCase();
+    document.querySelectorAll('#route-agency-picker .checkbox-row').forEach(row => {
+      row.style.display = row.dataset.name.includes(q) ? '' : 'none';
+    });
+  }
+}
+
+function onGlobalClick(e){
+  const btn = e.target.closest('[data-action]');
+  // Only the backdrop itself (not anything inside the modal) closes the modal on click.
+  if(!btn){
+    if(e.target.classList && e.target.classList.contains('modal-backdrop')){
+      document.getElementById('modal-root').innerHTML='';
+    }
+    return;
+  }
+  const action = btn.dataset.action;
+  const id = btn.dataset.id;
+
+  if(action === 'set-tab'){ state.tab = btn.dataset.tab; state.editingRouteId = null; render(); }
+  else if(action === 'close-modal'){ document.getElementById('modal-root').innerHTML=''; }
+  else if(action === 'pick-csv'){ document.getElementById('csv-input').click(); }
+  else if(action === 'new-agency'){ openAgencyModal(null); }
+  else if(action === 'edit-agency'){ openAgencyModal(id); }
+  else if(action === 'delete-agency'){
+    showConfirmModal('Delete this agency? Its visit history will also be removed.', function(){
+      state.agencies = state.agencies.filter(a=>a.id!==id);
+      state.visits = state.visits.filter(v=>v.agencyId!==id);
+      state.routes.forEach(r => { r.agencyIds = r.agencyIds.filter(aid=>aid!==id); });
+      saveAgencies(); saveVisits(); saveRoutes();
+      document.getElementById('modal-root').innerHTML='';
+      render();
+      showToast('Agency deleted');
+    });
+  }
+  else if(action === 'save-agency'){
+    const name = document.getElementById('f-name').value.trim();
+    const address = document.getElementById('f-address').value.trim();
+    const principal = document.getElementById('f-principal').value.trim();
+    const phone = document.getElementById('f-phone').value.trim();
+    if(!name || !address){ showToast('Name and address are required'); return; }
+    if(id){
+      const a = agencyById(id);
+      Object.assign(a, {name,address,principal,phone});
+    } else {
+      state.agencies.push({id:uid(), name, address, principal, phone, createdAt:new Date().toISOString()});
+    }
+    saveAgencies();
+    document.getElementById('modal-root').innerHTML='';
+    render();
+    showToast('Agency saved');
+  }
+  else if(action === 'mark-visited'){ openVisitModal(id); }
+  else if(action === 'save-visit'){
+    const date = document.getElementById('v-date').value;
+    const type = document.getElementById('v-type').value;
+    if(!date){ showToast('Pick a date'); return; }
+    state.visits.push({id:uid(), agencyId:id, date, type});
+    saveVisits();
+    document.getElementById('modal-root').innerHTML='';
+    render();
+    showToast('Visit logged');
+  }
+  else if(action === 'delete-visit'){
+    state.visits = state.visits.filter(v=>v.id!==id);
+    saveVisits();
+    render();
+    const agencyId = btn.dataset.agency;
+    if(agencyId) openVisitModal(agencyId);
+  }
+  else if(action === 'new-route'){
+    const r = {id:uid(), name:'New route', day:'Monday', date:'', agencyIds:[]};
+    state.routes.push(r);
+    saveRoutes();
+    state.editingRouteId = r.id;
+    render();
+  }
+  else if(action === 'edit-route'){ state.editingRouteId = id; render(); }
+  else if(action === 'close-route-editor'){ state.editingRouteId = null; render(); }
+  else if(action === 'duplicate-route'){
+    const r = state.routes.find(x=>x.id===id);
+    if(r){ state.routes.push({...r, id:uid(), name:r.name+' (copy)', date:''}); saveRoutes(); render(); showToast('Route duplicated'); }
+  }
+  else if(action === 'delete-route'){
+    showConfirmModal('Delete this route?', function(){
+      state.routes = state.routes.filter(r=>r.id!==id);
+      saveRoutes();
+      document.getElementById('modal-root').innerHTML='';
+      render();
+      showToast('Route deleted');
+    });
+  }
+  else if(action === 'confirm-yes'){
+    const cb = pendingConfirmYes;
+    pendingConfirmYes = null;
+    if(cb) cb();
+  }
+  else if(action === 'confirm-no'){
+    pendingConfirmYes = null;
+    document.getElementById('modal-root').innerHTML='';
+  }
+  else if(action === 'save-endpoint'){
+    const url = document.getElementById('endpoint-input').value.trim();
+    if(!url){ showToast('Paste your Apps Script URL first'); return; }
+    setEndpoint(url);
+    showToast('Connecting…');
+    loadState();
+  }
+  else if(action === 'sync-now'){ syncNow(); }
+  else if(action === 'save-route-meta'){
+    const r = state.routes.find(x=>x.id===state.editingRouteId);
+    r.name = document.getElementById('route-name').value.trim() || 'Untitled route';
+    r.day = document.getElementById('route-day').value;
+    r.date = document.getElementById('route-date').value;
+    saveRoutes(); showToast('Route details saved'); render();
+  }
+  else if(action === 'toggle-stop'){
+    const r = state.routes.find(x=>x.id===state.editingRouteId);
+    if(btn.checked) r.agencyIds.push(id); else r.agencyIds = r.agencyIds.filter(a=>a!==id);
+    saveRoutes(); render();
+  }
+  else if(action === 'remove-stop'){
+    const r = state.routes.find(x=>x.id===state.editingRouteId);
+    r.agencyIds.splice(parseInt(btn.dataset.index,10),1);
+    saveRoutes(); render();
+  }
+  else if(action === 'move-stop-up'){
+    const r = state.routes.find(x=>x.id===state.editingRouteId);
+    const i = parseInt(btn.dataset.index,10);
+    if(i>0){ [r.agencyIds[i-1],r.agencyIds[i]]=[r.agencyIds[i],r.agencyIds[i-1]]; saveRoutes(); render(); }
+  }
+  else if(action === 'move-stop-down'){
+    const r = state.routes.find(x=>x.id===state.editingRouteId);
+    const i = parseInt(btn.dataset.index,10);
+    if(i<r.agencyIds.length-1){ [r.agencyIds[i+1],r.agencyIds[i]]=[r.agencyIds[i],r.agencyIds[i+1]]; saveRoutes(); render(); }
+  }
+  else if(action === 'export-apple'){
+    const r = state.routes.find(x=>x.id===id);
+    const addresses = r.agencyIds.map(aid=>agencyById(aid)).filter(Boolean).map(a=>a.address);
+    if(addresses.length===0){ showToast('Add stops to this route first'); return; }
+    window.open(appleMapsUrlMultiStop(addresses), '_blank');
+  }
+  else if(action === 'export-google'){
+    const r = state.routes.find(x=>x.id===id);
+    const addresses = r.agencyIds.map(aid=>agencyById(aid)).filter(Boolean).map(a=>a.address);
+    if(addresses.length===0){ showToast('Add stops to this route first'); return; }
+    window.open(googleMapsUrlMultiStop(addresses), '_blank');
+  }
+  else if(action === 'copy-stops'){
+    const r = state.routes.find(x=>x.id===id);
+    const stops = r.agencyIds.map(aid=>agencyById(aid)).filter(Boolean);
+    const text = stops.map((a,i)=>(i+1)+'. '+a.name+' — '+a.address).join('\\n');
+    navigator.clipboard.writeText(text).then(()=>showToast('Stop list copied')).catch(()=>showToast('Could not copy — select and copy manually'));
+  }
+}
+
+function setupDragReorder(){
+  const list = document.getElementById('stop-order-list');
+  if(!list) return;
+  let dragIndex = null;
+  list.querySelectorAll('.stop-item').forEach(item => {
+    item.addEventListener('dragstart', () => { dragIndex = parseInt(item.dataset.index,10); item.classList.add('dragging'); });
+    item.addEventListener('dragend', () => { item.classList.remove('dragging'); });
+    item.addEventListener('dragover', (e) => e.preventDefault());
+    item.addEventListener('drop', () => {
+      const dropIndex = parseInt(item.dataset.index,10);
+      if(dragIndex === null || dragIndex === dropIndex) return;
+      const r = state.routes.find(x=>x.id===state.editingRouteId);
+      const [moved] = r.agencyIds.splice(dragIndex,1);
+      r.agencyIds.splice(dropIndex,0,moved);
+      saveRoutes();
+      render();
+    });
+  });
+}
+
+loadState();
+</script>
+</body>
+</html>
