@@ -9,27 +9,31 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <style>
   :root{
-    --ink:#17242E;
-    --ink-soft:#3E4C55;
-    --paper:#EEF1EC;
+    --ink:#0F1F4D;
+    --ink-soft:#3B4C86;
+    --paper:#F2F4FA;
     --paper-raised:#FFFFFF;
-    --line:#D7DED4;
-    --line-strong:#B9C4B5;
-    --route:#1F6F64;
-    --route-soft:#DCEEEA;
-    --route-dark:#0F4A42;
+    --line:#DCE1EF;
+    --line-strong:#B7C0DE;
+    --route:#7A4FE0;
+    --route-soft:#EDE6FB;
+    --route-dark:#5A34B8;
     --visited:#C98A1B;
     --visited-soft:#F6E7C9;
     --pending:#B23B3B;
     --pending-soft:#F5DEDC;
     --virtual:#3D6FB4;
     --virtual-soft:#DCE6F4;
-    --phone:#7A5AA8;
-    --phone-soft:#E7DFF3;
-    --muted:#697C71;
+    --phone:#1E8A82;
+    --phone-soft:#DCEFEC;
+    --muted:#5C6690;
+    --navy:#0F1F4D;
+    --lightblue:#9FD8F0;
+    --cream:#F0EAD8;
     --radius:10px;
   }
   *{box-sizing:border-box;}
+  html,body{overflow-x:hidden;}
   body{
     margin:0;
     background:var(--paper);
@@ -43,18 +47,25 @@
 
   .topbar{
     display:flex;justify-content:space-between;align-items:flex-end;
-    padding:28px 0 18px;border-bottom:2px solid var(--ink);margin-bottom:4px;
+    padding:26px 24px 20px;margin:0 -20px 0;background:var(--navy);
+    border-radius:0 0 22px 22px;color:#fff;
   }
-  .brand-mark{display:flex;align-items:center;gap:12px;}
-  .brand-mark .badge{
-    width:40px;height:40px;border-radius:50%;background:var(--route);
-    color:#fff;display:flex;align-items:center;justify-content:center;
-    font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;
-    transform:rotate(-6deg);border:2px solid var(--ink);
+  .brand-mark{display:flex;flex-direction:column;gap:2px;}
+  .brand-mark .wordmark{
+    font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:34px;
+    letter-spacing:-0.01em;color:#fff;line-height:1;
+    border-bottom:4px solid var(--route);display:inline-block;padding-bottom:4px;width:fit-content;
   }
-  .topbar h1{font-size:22px;letter-spacing:-0.02em;}
-  .topbar .sub{font-size:12.5px;color:var(--muted);margin-top:2px;font-family:'IBM Plex Mono',monospace;}
-  .year-pill{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--muted);text-align:right;}
+  .brand-mark .tagline{
+    font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:20px;color:#fff;margin-top:8px;
+  }
+  .topbar .sub{font-size:12px;color:#C7CEEE;margin-top:4px;font-family:'IBM Plex Mono',monospace;}
+  .year-pill{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#C7CEEE;text-align:right;}
+  .brand-strip{
+    height:10px;margin:0 -20px 4px;border-radius:0 0 4px 4px;overflow:hidden;
+    display:flex;
+  }
+  .brand-strip span{flex:1;height:100%;}
 
   .tabs{display:flex;gap:6px;margin:18px 0 22px;flex-wrap:wrap;}
   .tab-btn{
@@ -168,10 +179,18 @@
     width:20px;flex-shrink:0;
   }
   .stop-body{flex:1;min-width:0;}
-  .stop-name{font-weight:600;font-size:13.5px;}
-  .stop-addr{font-size:12px;color:var(--muted);}
+  .stop-name{font-weight:600;font-size:13.5px;overflow-wrap:anywhere;}
+  .stop-addr{font-size:12px;color:var(--muted);overflow-wrap:anywhere;}
   .drag-handle{cursor:grab;color:var(--muted);padding:0 4px;}
   .stop-item.dragging{opacity:.4;}
+  .time-chip{
+    font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;
+    background:var(--route-soft);color:var(--route-dark);padding:3px 8px;border-radius:6px;white-space:nowrap;
+  }
+  .drive-seg{
+    list-style:none;padding:4px 0 4px 30px;font-size:12px;color:var(--muted);
+    border-top:none;display:flex;align-items:center;gap:4px;flex-wrap:wrap;
+  }
 
   .metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px;}
   .metric{background:var(--paper-raised);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;}
@@ -207,9 +226,20 @@
   }
   .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
 
+  .stale-banner{
+    background:var(--pending-soft);border:1.5px solid var(--pending);border-radius:8px;
+    padding:10px 14px;margin-bottom:16px;font-size:13px;color:#7A2626;
+  }
+  .stale-list{list-style:none;margin:10px 0 0;padding:8px 0 0;border-top:1px solid rgba(178,59,59,.3);max-height:220px;overflow:auto;}
+  .stale-list li{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;font-size:12.5px;}
+  .stale-list li .addr{color:#8a4444;}
+
   @media (max-width:640px){
     #app{padding:0 12px 40px;}
-    .topbar{flex-direction:column;align-items:flex-start;gap:10px;padding:18px 0 14px;}
+    .topbar{flex-direction:column;align-items:flex-start;gap:10px;padding:20px 16px 16px;margin:0 -12px 0;}
+    .brand-strip{margin:0 -12px 4px;}
+    .brand-mark .wordmark{font-size:26px;}
+    .brand-mark .tagline{font-size:16px;}
     .year-pill{text-align:left;}
     .tabs{overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;padding-bottom:2px;}
     .tab-btn{flex-shrink:0;}
@@ -221,6 +251,11 @@
     button{min-height:38px;}
     .row-between{align-items:stretch;}
     .search-input{min-width:0;width:100%;}
+    .stop-item{flex-wrap:wrap;}
+    .stop-item .stop-body{flex:1 1 100%;order:1;}
+    .stop-item .drag-handle,.stop-item .stop-num{order:0;}
+    .stop-item select,.stop-item button{order:2;}
+    .drive-seg{padding-left:4px;}
   }
 </style>
 </head>
@@ -236,12 +271,15 @@ const state = {
   agencies: [],
   routes: [],
   visits: [],
+  settings: { staleDays: 30 },
   editingRouteId: null,
   agencySearch: '',
   dashboardYear: new Date().getFullYear(),
   loaded: false,
   syncStatus: 'unconfigured', // unconfigured | connected | error | syncing
-  lastSyncedAt: null
+  lastSyncedAt: null,
+  staleBannerOpen: false,
+  driveTimeCache: {} // routeId -> { computing: bool, segments: [{minutes, km}], error: bool }
 };
 
 const WEEKDAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
@@ -250,6 +288,18 @@ const VISIT_TYPES = [
   {id:'virtual', label:'Virtual', color:'visited-virtual'},
   {id:'phone', label:'Phone call', color:'visited-phone'}
 ];
+const TIME_OPTIONS = (function(){
+  const out = [];
+  for(let h=0; h<24; h++){
+    for(let m=0; m<60; m+=15){
+      const hh = String(h).padStart(2,'0');
+      const mm = String(m).padStart(2,'0');
+      const ampm = h===0 ? '12:'+mm+' AM' : h<12 ? h+':'+mm+' AM' : h===12 ? '12:'+mm+' PM' : (h-12)+':'+mm+' PM';
+      out.push({ value: hh+':'+mm, label: ampm });
+    }
+  }
+  return out;
+})();
 
 function uid(){ return Math.random().toString(36).slice(2,10) + Date.now().toString(36).slice(-4); }
 
@@ -292,14 +342,15 @@ async function remoteSet(key, value){
 
 async function loadState(){
   const endpoint = getEndpoint();
-  const keys = ['agencies','routes','visits'];
+  const keys = ['agencies','routes','visits','settings'];
   if(endpoint){
     state.syncStatus = 'syncing';
     try{
-      const [a, r, v] = await Promise.all(keys.map(remoteGet));
+      const [a, r, v, st] = await Promise.all(keys.map(remoteGet));
       state.agencies = a || [];
       state.routes = r || [];
       state.visits = v || [];
+      state.settings = st || { staleDays: 30 };
       keys.forEach(k => localSet(k, state[k]));
       state.syncStatus = 'connected';
       state.lastSyncedAt = new Date();
@@ -307,16 +358,34 @@ async function loadState(){
       state.agencies = localGet('agencies') || [];
       state.routes = localGet('routes') || [];
       state.visits = localGet('visits') || [];
+      state.settings = localGet('settings') || { staleDays: 30 };
       state.syncStatus = 'error';
     }
   } else {
     state.agencies = localGet('agencies') || [];
     state.routes = localGet('routes') || [];
     state.visits = localGet('visits') || [];
+    state.settings = localGet('settings') || { staleDays: 30 };
     state.syncStatus = 'unconfigured';
   }
+  migrateRouteStops();
   state.loaded = true;
   render();
+}
+
+// Older saved routes stored `agencyIds: [id, id, ...]`. Newer routes store
+// `stops: [{agencyId, time}, ...]` so each stop can carry a scheduled time.
+function migrateRouteStops(){
+  let changed = false;
+  state.routes.forEach(r => {
+    if(!r.stops && Array.isArray(r.agencyIds)){
+      r.stops = r.agencyIds.map(id => ({ agencyId:id, time:'' }));
+      delete r.agencyIds;
+      changed = true;
+    }
+    if(!r.stops) r.stops = [];
+  });
+  if(changed) saveRoutes();
 }
 
 async function persist(key, value){
@@ -336,6 +405,7 @@ async function persist(key, value){
 const saveAgencies = () => persist('agencies', state.agencies);
 const saveRoutes = () => persist('routes', state.routes);
 const saveVisits = () => persist('visits', state.visits);
+const saveSettings = () => persist('settings', state.settings);
 
 async function syncNow(){
   if(!getEndpoint()){ showToast('Add your Apps Script URL first'); return; }
@@ -344,7 +414,8 @@ async function syncNow(){
     await Promise.all([
       remoteSet('agencies', state.agencies),
       remoteSet('routes', state.routes),
-      remoteSet('visits', state.visits)
+      remoteSet('visits', state.visits),
+      remoteSet('settings', state.settings)
     ]);
     state.syncStatus = 'connected';
     state.lastSyncedAt = new Date();
@@ -385,6 +456,20 @@ function yearStats(year){
   const byType = {'in-person':0,'virtual':0,'phone':0};
   state.visits.filter(v => new Date(v.date).getFullYear() === year).forEach(v => { byType[v.type] = (byType[v.type]||0)+1; });
   return { total, visitedCount, pct, byType, visitedIds };
+}
+
+function staleAgencies(){
+  const days = state.settings.staleDays || 30;
+  const cutoff = Date.now() - days*24*60*60*1000;
+  return state.agencies.filter(a => {
+    const lv = lastVisit(a.id);
+    return !lv || new Date(lv.date).getTime() < cutoff;
+  }).sort((a,b) => {
+    const la = lastVisit(a.id), lb = lastVisit(b.id);
+    const ta = la ? new Date(la.date).getTime() : -Infinity;
+    const tb = lb ? new Date(lb.date).getTime() : -Infinity;
+    return ta - tb;
+  });
 }
 
 // ---------- CSV import ----------
@@ -442,12 +527,108 @@ function verifyOnMapUrl(address){
   return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(address);
 }
 
+// ---------- geocoding + drive time estimates ----------
+// Uses free public services (OpenStreetMap Nominatim for geocoding, OSRM's demo
+// router for driving time). No API key needed, but these are best-effort/rate-limited
+// public services meant for light personal use — not a paid, guaranteed-uptime API.
+function sleep(ms){ return new Promise(res => setTimeout(res, ms)); }
+
+async function geocodeAddress(address){
+  const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(address);
+  const res = await fetch(url, { headers: { 'Accept':'application/json' } });
+  if(!res.ok) throw new Error('geocode failed');
+  const data = await res.json();
+  if(!data || !data[0]) throw new Error('no match');
+  return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
+}
+
+async function ensureGeocoded(agency){
+  if(agency.lat != null && agency.lon != null) return true;
+  try{
+    const loc = await geocodeAddress(agency.address);
+    agency.lat = loc.lat;
+    agency.lon = loc.lon;
+    return true;
+  }catch(e){
+    return false;
+  }
+}
+
+async function driveSegment(from, to){
+  const url = 'https://router.project-osrm.org/route/v1/driving/'+from.lon+','+from.lat+';'+to.lon+','+to.lat+'?overview=false';
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('routing failed');
+  const data = await res.json();
+  if(!data.routes || !data.routes[0]) throw new Error('no route');
+  return { minutes: Math.round(data.routes[0].duration/60), km: Math.round(data.routes[0].distance/100)/10 };
+}
+
+async function estimateDriveTimes(routeId){
+  const r = state.routes.find(x=>x.id===routeId);
+  if(!r || r.stops.length < 2) return;
+  state.driveTimeCache[routeId] = { computing:true, segments:[], error:false };
+  render();
+  const agencies = r.stops.map(s => agencyById(s.agencyId)).filter(Boolean);
+  let geocodeFailed = false;
+  for(let i=0; i<agencies.length; i++){
+    if(agencies[i].lat == null || agencies[i].lon == null){
+      const ok = await ensureGeocoded(agencies[i]);
+      if(!ok) geocodeFailed = true;
+      await sleep(1100); // respect Nominatim's ~1 request/second usage policy
+    }
+  }
+  saveAgencies();
+  const segments = [];
+  let routingFailed = false;
+  for(let i=0; i<agencies.length-1; i++){
+    const from = agencies[i], to = agencies[i+1];
+    if(from.lat==null || to.lat==null){ segments.push(null); continue; }
+    try{
+      segments.push(await driveSegment(from, to));
+    }catch(e){
+      segments.push(null);
+      routingFailed = true;
+    }
+    await sleep(200);
+  }
+  state.driveTimeCache[routeId] = { computing:false, segments, error: geocodeFailed || routingFailed };
+  render();
+}
+
 // ---------- rendering ----------
 function render(){
   const app = document.getElementById('app');
   if(!state.loaded){ app.innerHTML = '<div style="padding:60px 0;text-align:center;color:var(--muted)">Loading manifest…</div>'; return; }
-  app.innerHTML = renderTopbar() + renderTabs() + renderBody();
+  app.innerHTML = renderTopbar() + renderTabs() + renderStaleBanner() + renderBody();
   attachGlobalListeners();
+}
+
+function renderStaleBanner(){
+  const stale = staleAgencies();
+  if(stale.length === 0) return '';
+  const days = state.settings.staleDays || 30;
+  let html = '<div class="stale-banner">'+
+    '<div class="row-between" data-action="toggle-stale-banner" style="cursor:pointer;">'+
+      '<div class="row" style="gap:8px;">'+
+        '<span class="dot pending"></span>'+
+        '<b>'+stale.length+' agenc'+(stale.length===1?'y':'ies')+'</b>&nbsp;overdue for a visit (no contact in '+days+'+ days)'+
+      '</div>'+
+      '<button class="ghost sm" data-action="toggle-stale-banner">'+(state.staleBannerOpen?'Hide':'Show')+'</button>'+
+    '</div>';
+  if(state.staleBannerOpen){
+    html += '<ul class="stale-list">';
+    stale.slice(0,25).forEach(a => {
+      const lv = lastVisit(a.id);
+      html += '<li><span>'+escapeHtml(a.name)+'</span>'+
+        '<span class="addr">'+(lv ? 'last visited '+new Date(lv.date).toLocaleDateString() : 'never visited')+'</span>'+
+        '<button class="ghost sm" data-action="mark-visited" data-id="'+a.id+'">Log visit</button>'+
+      '</li>';
+    });
+    if(stale.length > 25) html += '<li class="addr">+ '+(stale.length-25)+' more — see the Agencies tab.</li>';
+    html += '</ul>';
+  }
+  html += '</div>';
+  return html;
 }
 
 function renderTopbar(){
@@ -460,13 +641,15 @@ function renderTopbar(){
   const s = statusMap[state.syncStatus] || statusMap.unconfigured;
   return '<div class="topbar">'+
     '<div class="brand-mark">'+
-      '<div class="badge">RTE</div>'+
-      '<div><h1>Field route manifest</h1><div class="sub">agency visit routing &amp; coverage log</div></div>'+
+      '<div class="wordmark">GEICO</div>'+
+      '<div class="tagline">For Your Agency</div>'+
+      '<div class="sub">agency visit routing &amp; coverage log</div>'+
     '</div>'+
     '<div class="year-pill">'+state.agencies.length+' agencies on file<br>'+state.routes.length+' saved routes<br>'+
       '<span class="stamp '+s.color+'" style="margin-top:4px;"><span class="dot '+s.color+'"></span>'+s.label+'</span>'+
     '</div>'+
-  '</div>';
+  '</div>'+
+  '<div class="brand-strip"><span style="background:var(--lightblue);"></span><span style="background:#fff;"></span><span style="background:var(--route);"></span><span style="background:var(--cream);"></span><span style="background:var(--navy);"></span></div>';
 }
 
 function renderTabs(){
@@ -564,12 +747,14 @@ function renderRoutesTab(){
 }
 
 function renderRouteCard(r){
-  const stops = r.agencyIds.map(id => agencyById(id)).filter(Boolean);
+  const stopAgencies = r.stops.map(s => ({ agency: agencyById(s.agencyId), time: s.time })).filter(x => x.agency);
   const year = state.dashboardYear;
+  const dt = state.driveTimeCache[r.id];
+
   let html = '<div class="route-card">'+
     '<div class="route-head">'+
       '<div><div class="route-title">'+escapeHtml(r.name)+'</div>'+
-      '<div class="addr">'+stops.length+' stop'+(stops.length===1?'':'s')+(r.date ? ' · '+new Date(r.date+'T00:00:00').toLocaleDateString() : '')+'</div></div>'+
+      '<div class="addr">'+stopAgencies.length+' stop'+(stopAgencies.length===1?'':'s')+(r.date ? ' · '+new Date(r.date+'T00:00:00').toLocaleDateString() : '')+'</div></div>'+
       '<div class="row">'+
         '<span class="day-chip">'+escapeHtml(r.day)+'</span>'+
         '<button class="ghost sm" data-action="edit-route" data-id="'+r.id+'">Edit</button>'+
@@ -578,26 +763,40 @@ function renderRouteCard(r){
       '</div>'+
     '</div>';
 
-  if(stops.length){
+  if(stopAgencies.length){
     html += '<ul class="stop-list">';
-    stops.forEach((a,i) => {
+    stopAgencies.forEach((s,i) => {
+      const a = s.agency;
       const visited = visitsForAgencyYear(a.id, year).length > 0;
       html += '<li class="stop-item">'+
         '<span class="stop-num">'+(i+1)+'.</span>'+
         '<span class="dot '+(visited?'visited-in-person':'pending')+'" title="'+(visited?'Visited this year':'Not visited this year')+'"></span>'+
         '<div class="stop-body"><div class="stop-name">'+escapeHtml(a.name)+'</div><div class="stop-addr">'+escapeHtml(a.address)+'</div></div>'+
+        (s.time ? '<span class="time-chip">'+formatTime(s.time)+'</span>' : '')+
         '<button class="ghost sm" data-action="mark-visited" data-id="'+a.id+'">Log</button>'+
       '</li>';
+      if(i < stopAgencies.length-1){
+        html += '<li class="drive-seg">'+renderDriveSegment(dt, i)+'</li>';
+      }
     });
     html += '</ul>';
 
-    const addresses = stops.map(a=>a.address);
-    html += '<div class="row" style="margin-top:14px;">'+
+    if(stopAgencies.length > 1){
+      html += '<div class="row" style="margin-top:10px;">'+
+        '<button class="ghost sm" data-action="estimate-drive" data-id="'+r.id+'" '+(dt&&dt.computing?'disabled':'')+'>'+
+          (dt&&dt.computing ? 'Estimating…' : 'Estimate drive times') +
+        '</button>'+
+        (dt && dt.error ? '<span class="addr">Some legs couldn\u2019t be estimated — check those addresses.</span>' : '')+
+      '</div>';
+    }
+
+    const addresses = stopAgencies.map(s=>s.agency.address);
+    html += '<div class="row" style="margin-top:10px;">'+
       '<button class="primary" data-action="export-apple" data-id="'+r.id+'">Open route in Apple Maps</button>'+
       '<button data-action="export-google" data-id="'+r.id+'">Open route in Google Maps</button>'+
       '<button class="ghost" data-action="copy-stops" data-id="'+r.id+'">Copy stop list</button>'+
     '</div>';
-    if(stops.length > 8){
+    if(stopAgencies.length > 8){
       html += '<div class="addr" style="margin-top:6px;">Long routes may exceed the URL length a map app allows — if the link fails to open, use "Copy stop list" and paste the stops into your maps app instead.</div>';
     }
   } else {
@@ -607,12 +806,25 @@ function renderRouteCard(r){
   return html;
 }
 
+function formatTime(hhmm){
+  const opt = TIME_OPTIONS.find(t => t.value === hhmm);
+  return opt ? opt.label : hhmm;
+}
+
+function renderDriveSegment(dt, index){
+  if(!dt || dt.computing) return '<span class="addr">&middot;&middot;&middot;</span>';
+  const seg = dt.segments && dt.segments[index];
+  if(!seg) return '<span class="addr">drive time unavailable</span>';
+  return '<span class="addr">&#8594; ~'+seg.minutes+' min drive ('+seg.km+' km)</span>';
+}
+
 // ---- Route editor ----
 function renderRouteEditor(){
   const r = state.routes.find(x => x.id === state.editingRouteId);
   if(!r) { state.editingRouteId = null; return renderRoutesTab(); }
-  const assigned = new Set(r.agencyIds);
+  const assigned = new Set(r.stops.map(s=>s.agencyId));
   const sorted = [...state.agencies].sort((a,b)=>a.name.localeCompare(b.name));
+  const dt = state.driveTimeCache[r.id];
 
   let html = '<div class="row" style="margin-bottom:14px;">'+
     '<button class="ghost" data-action="close-route-editor">&larr; Back to routes</button>'+
@@ -631,24 +843,37 @@ function renderRouteEditor(){
 
   // stop order
   html += '<div style="flex:1;min-width:280px;">'+
-    '<div class="section-label">Stops in order ('+r.agencyIds.length+')</div>';
-  if(r.agencyIds.length === 0){
+    '<div class="row-between" style="margin:18px 0 8px;">'+
+      '<div class="section-label" style="margin:0;">Stops in order ('+r.stops.length+')</div>'+
+      (r.stops.length > 1 ? '<button class="ghost sm" data-action="estimate-drive" data-id="'+r.id+'" '+(dt&&dt.computing?'disabled':'')+'>'+(dt&&dt.computing?'Estimating…':'Estimate drive times')+'</button>' : '')+
+    '</div>';
+  if(r.stops.length === 0){
     html += '<div class="empty">Select agencies from the list on the right to add stops.</div>';
   } else {
     html += '<ul class="stop-list" id="stop-order-list">';
-    r.agencyIds.forEach((id,i) => {
-      const a = agencyById(id);
+    r.stops.forEach((stop,i) => {
+      const a = agencyById(stop.agencyId);
       if(!a) return;
       html += '<li class="stop-item" draggable="true" data-index="'+i+'">'+
         '<span class="drag-handle">::</span>'+
         '<span class="stop-num">'+(i+1)+'.</span>'+
         '<div class="stop-body"><div class="stop-name">'+escapeHtml(a.name)+'</div><div class="stop-addr">'+escapeHtml(a.address)+'</div></div>'+
+        '<select class="mono" style="font-size:12px;padding:5px 6px;" data-action="set-stop-time" data-index="'+i+'" title="Scheduled meeting time">'+
+          '<option value="">No time set</option>'+
+          TIME_OPTIONS.map(t=>'<option value="'+t.value+'" '+(stop.time===t.value?'selected':'')+'>'+t.label+'</option>').join('')+
+        '</select>'+
         '<button class="ghost sm" data-action="move-stop-up" data-index="'+i+'" '+(i===0?'disabled':'')+'>&uarr;</button>'+
-        '<button class="ghost sm" data-action="move-stop-down" data-index="'+i+'" '+(i===r.agencyIds.length-1?'disabled':'')+'>&darr;</button>'+
+        '<button class="ghost sm" data-action="move-stop-down" data-index="'+i+'" '+(i===r.stops.length-1?'disabled':'')+'>&darr;</button>'+
         '<button class="ghost sm" data-action="remove-stop" data-index="'+i+'">Remove</button>'+
       '</li>';
+      if(i < r.stops.length-1){
+        html += '<li class="drive-seg">'+renderDriveSegment(dt, i)+leaveByHint(r, i)+'</li>';
+      }
     });
     html += '</ul>';
+    if(dt && dt.error){
+      html += '<div class="addr" style="margin-top:6px;">Some legs couldn\u2019t be estimated — double check those addresses are complete.</div>';
+    }
   }
   html += '</div>';
 
@@ -670,6 +895,19 @@ function renderRouteEditor(){
   return html;
 }
 
+function leaveByHint(r, index){
+  const dt = state.driveTimeCache[r.id];
+  if(!dt || !dt.segments) return '';
+  const seg = dt.segments[index];
+  const nextStop = r.stops[index+1];
+  if(!seg || !nextStop || !nextStop.time) return '';
+  const [hh,mm] = nextStop.time.split(':').map(Number);
+  const arriveBy = new Date(); arriveBy.setHours(hh,mm,0,0);
+  const leaveBy = new Date(arriveBy.getTime() - seg.minutes*60000);
+  const label = leaveBy.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+  return ' <span class="addr">&middot; leave by '+label+' to arrive on time</span>';
+}
+
 // ---- Settings tab ----
 function renderSettingsTab(){
   const endpoint = getEndpoint();
@@ -682,6 +920,14 @@ function renderSettingsTab(){
   const s = statusMap[state.syncStatus] || statusMap.unconfigured;
 
   let html = '<div class="card">'+
+    '<h3 style="font-size:15px;margin-bottom:8px;">Overdue visit alerts</h3>'+
+    '<div class="addr" style="margin-bottom:12px;">Shown as a banner at the top of every tab when agencies haven\u2019t been visited recently.</div>'+
+    '<div class="field" style="max-width:220px;"><label>Alert after this many days</label>'+
+      '<input type="text" inputmode="numeric" id="stale-days-input" value="'+(state.settings.staleDays||30)+'"></div>'+
+    '<button class="primary" style="margin-top:10px;" data-action="save-stale-days">Save</button>'+
+  '</div>';
+
+  html += '<div class="card">'+
     '<div class="row-between"><h3 style="font-size:15px;">Cross-device sync</h3>'+
       '<span class="stamp '+s.color+'"><span class="dot '+s.color+'"></span>'+s.label+'</span>'+
     '</div>'+
@@ -709,6 +955,11 @@ function renderSettingsTab(){
   html += '<div class="card">'+
     '<h3 style="font-size:14px;margin-bottom:8px;">How this works</h3>'+
     '<div class="addr" style="line-height:1.6;">Every change is saved instantly on this device, then mirrored to your Google Sheet. Open the same web app URL on another device and it will pull the same data. If you lose signal, changes stay saved on this device — hit "Sync now" once you\u2019re back online to push anything that didn\u2019t make it through.</div>'+
+  '</div>';
+
+  html += '<div class="card">'+
+    '<h3 style="font-size:14px;margin-bottom:8px;">About drive-time estimates</h3>'+
+    '<div class="addr" style="line-height:1.6;">"Estimate drive times" on a route looks up each address (OpenStreetMap) and calculates a real road-based driving time and distance between consecutive stops (OSRM). Both are free public services — accurate for planning, but without live traffic and occasionally slow or briefly unavailable. Estimates are cached per agency so you only wait through the lookup once.</div>'+
   '</div>';
   return html;
 }
@@ -860,6 +1111,12 @@ function attachGlobalListeners(){
 function onGlobalChange(e){
   const t = e.target;
   if(t.id === 'dash-year'){ state.dashboardYear = parseInt(t.value,10); render(); }
+  if(t.dataset && t.dataset.action === 'set-stop-time'){
+    const r = state.routes.find(x=>x.id===state.editingRouteId);
+    const i = parseInt(t.dataset.index,10);
+    if(r && r.stops[i]){ r.stops[i].time = t.value; saveRoutes(); render(); }
+    return;
+  }
   if(t.id === 'route-agency-search'){
     const q = t.value.toLowerCase();
     document.querySelectorAll('#route-agency-picker .checkbox-row').forEach(row => {
@@ -900,7 +1157,7 @@ function onGlobalClick(e){
     showConfirmModal('Delete this agency? Its visit history will also be removed.', function(){
       state.agencies = state.agencies.filter(a=>a.id!==id);
       state.visits = state.visits.filter(v=>v.agencyId!==id);
-      state.routes.forEach(r => { r.agencyIds = r.agencyIds.filter(aid=>aid!==id); });
+      state.routes.forEach(r => { r.stops = r.stops.filter(s=>s.agencyId!==id); });
       saveAgencies(); saveVisits(); saveRoutes();
       document.getElementById('modal-root').innerHTML='';
       render();
@@ -943,7 +1200,7 @@ function onGlobalClick(e){
     if(agencyId) openVisitModal(agencyId);
   }
   else if(action === 'new-route'){
-    const r = {id:uid(), name:'New route', day:'Monday', date:'', agencyIds:[]};
+    const r = {id:uid(), name:'New route', day:'Monday', date:'', stops:[]};
     state.routes.push(r);
     saveRoutes();
     state.editingRouteId = r.id;
@@ -953,7 +1210,7 @@ function onGlobalClick(e){
   else if(action === 'close-route-editor'){ state.editingRouteId = null; render(); }
   else if(action === 'duplicate-route'){
     const r = state.routes.find(x=>x.id===id);
-    if(r){ state.routes.push({...r, id:uid(), name:r.name+' (copy)', date:''}); saveRoutes(); render(); showToast('Route duplicated'); }
+    if(r){ state.routes.push({...r, id:uid(), name:r.name+' (copy)', date:'', stops:r.stops.map(s=>({...s}))}); saveRoutes(); render(); showToast('Route duplicated'); }
   }
   else if(action === 'delete-route'){
     showConfirmModal('Delete this route?', function(){
@@ -990,40 +1247,49 @@ function onGlobalClick(e){
   }
   else if(action === 'toggle-stop'){
     const r = state.routes.find(x=>x.id===state.editingRouteId);
-    if(btn.checked) r.agencyIds.push(id); else r.agencyIds = r.agencyIds.filter(a=>a!==id);
+    if(btn.checked) r.stops.push({agencyId:id, time:''}); else r.stops = r.stops.filter(s=>s.agencyId!==id);
     saveRoutes(); render();
   }
   else if(action === 'remove-stop'){
     const r = state.routes.find(x=>x.id===state.editingRouteId);
-    r.agencyIds.splice(parseInt(btn.dataset.index,10),1);
+    r.stops.splice(parseInt(btn.dataset.index,10),1);
+    delete state.driveTimeCache[r.id];
     saveRoutes(); render();
   }
   else if(action === 'move-stop-up'){
     const r = state.routes.find(x=>x.id===state.editingRouteId);
     const i = parseInt(btn.dataset.index,10);
-    if(i>0){ [r.agencyIds[i-1],r.agencyIds[i]]=[r.agencyIds[i],r.agencyIds[i-1]]; saveRoutes(); render(); }
+    if(i>0){ [r.stops[i-1],r.stops[i]]=[r.stops[i],r.stops[i-1]]; delete state.driveTimeCache[r.id]; saveRoutes(); render(); }
   }
   else if(action === 'move-stop-down'){
     const r = state.routes.find(x=>x.id===state.editingRouteId);
     const i = parseInt(btn.dataset.index,10);
-    if(i<r.agencyIds.length-1){ [r.agencyIds[i+1],r.agencyIds[i]]=[r.agencyIds[i],r.agencyIds[i+1]]; saveRoutes(); render(); }
+    if(i<r.stops.length-1){ [r.stops[i+1],r.stops[i]]=[r.stops[i],r.stops[i+1]]; delete state.driveTimeCache[r.id]; saveRoutes(); render(); }
+  }
+  else if(action === 'estimate-drive'){ estimateDriveTimes(id); }
+  else if(action === 'toggle-stale-banner'){ state.staleBannerOpen = !state.staleBannerOpen; render(); }
+  else if(action === 'save-stale-days'){
+    const val = parseInt(document.getElementById('stale-days-input').value, 10);
+    state.settings.staleDays = (isFinite(val) && val > 0) ? val : 30;
+    saveSettings();
+    showToast('Alert threshold saved');
   }
   else if(action === 'export-apple'){
     const r = state.routes.find(x=>x.id===id);
-    const addresses = r.agencyIds.map(aid=>agencyById(aid)).filter(Boolean).map(a=>a.address);
+    const addresses = r.stops.map(s=>agencyById(s.agencyId)).filter(Boolean).map(a=>a.address);
     if(addresses.length===0){ showToast('Add stops to this route first'); return; }
     window.open(appleMapsUrlMultiStop(addresses), '_blank');
   }
   else if(action === 'export-google'){
     const r = state.routes.find(x=>x.id===id);
-    const addresses = r.agencyIds.map(aid=>agencyById(aid)).filter(Boolean).map(a=>a.address);
+    const addresses = r.stops.map(s=>agencyById(s.agencyId)).filter(Boolean).map(a=>a.address);
     if(addresses.length===0){ showToast('Add stops to this route first'); return; }
     window.open(googleMapsUrlMultiStop(addresses), '_blank');
   }
   else if(action === 'copy-stops'){
     const r = state.routes.find(x=>x.id===id);
-    const stops = r.agencyIds.map(aid=>agencyById(aid)).filter(Boolean);
-    const text = stops.map((a,i)=>(i+1)+'. '+a.name+' — '+a.address).join('\\n');
+    const stops = r.stops.map(s=>({ agency: agencyById(s.agencyId), time: s.time })).filter(x=>x.agency);
+    const text = stops.map((s,i)=>(i+1)+'. '+s.agency.name+(s.time?' ('+formatTime(s.time)+')':'')+' — '+s.agency.address).join('\\n');
     navigator.clipboard.writeText(text).then(()=>showToast('Stop list copied')).catch(()=>showToast('Could not copy — select and copy manually'));
   }
 }
@@ -1040,8 +1306,9 @@ function setupDragReorder(){
       const dropIndex = parseInt(item.dataset.index,10);
       if(dragIndex === null || dragIndex === dropIndex) return;
       const r = state.routes.find(x=>x.id===state.editingRouteId);
-      const [moved] = r.agencyIds.splice(dragIndex,1);
-      r.agencyIds.splice(dropIndex,0,moved);
+      const [moved] = r.stops.splice(dragIndex,1);
+      r.stops.splice(dropIndex,0,moved);
+      delete state.driveTimeCache[r.id];
       saveRoutes();
       render();
     });
