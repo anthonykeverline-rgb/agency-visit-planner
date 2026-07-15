@@ -534,16 +534,34 @@ function verifyOnMapUrl(address){
 function sleep(ms){ return new Promise(res => setTimeout(res, ms)); }
 
 async function geocodeAddress(address){
-  const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(address);
-  const res = await fetch(url, { headers: { 'Accept':'application/json' } });
-  if(!res.ok) throw new Error('geocode failed');
-  const data = await res.json();
-  if(!data || !data[0]) throw new Error('no match');
-  return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
+  const attempt = async (q) => {
+    const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q);
+    const res = await fetch(url, { headers: { 'Accept':'application/json' } });
+    if(res.status === 429){ await sleep(2000); return attempt(q); } // rate-limited, back off once and retry
+    if(!res.ok) throw new Error('geocode failed');
+    const data = await res.json();
+    if(!data || !data[0]) return null;
+    return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
+  };
+  // First try the address as entered.
+  let loc = await attempt(address);
+  if(loc) return loc;
+  // Fall back to a simplified version — suite/unit numbers are the most common
+  // reason a full-service geocoder can't find an otherwise-valid address.
+  const simplified = address
+    .replace(/,?\s*(suite|ste|unit|apt|#)\s*[\w-]+/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  if(simplified && simplified !== address){
+    await sleep(1100);
+    loc = await attempt(simplified);
+    if(loc) return loc;
+  }
+  throw new Error('no match');
 }
 
 async function ensureGeocoded(agency){
-  if(agency.lat != null && agency.lon != null) return true;
+  if(agency.lat != null && agency.lon != null) return true; // includes manually-entered coordinates
   try{
     const loc = await geocodeAddress(agency.address);
     agency.lat = loc.lat;
@@ -555,12 +573,65 @@ async function ensureGeocoded(agency){
 }
 
 async function driveSegment(from, to){
-  const url = 'https://router.project-osrm.org/route/v1/driving/'+from.lon+','+from.lat+';'+to.lon+','+to.lat+'?overview=false';
-  const res = await fetch(url);
-  if(!res.ok) throw new Error('routing failed');
-  const data = await res.json();
-  if(!data.routes || !data.routes[0]) throw new Error('no route');
-  return { minutes: Math.round(data.routes[0].duration/60), km: Math.round(data.routes[0].distance/100)/10 };
+  const attempt = async () => {
+    const url = 'https://router.project-osrm.org/route/v1/driving/'+from.lon+','+from.lat+';'+to.lon+','+to.lat+'?overview=false';
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('routing failed');
+    const data = await res.json();
+    if(!data.routes || !data.routes[0]) throw new Error('no route');
+    return { minutes: Math.round(data.routes[0].duration/60), km: Math.round(data.routes[0].distance/100)/10 };
+  };
+  try{
+    return await attempt();
+  }catch(e){
+    await sleep(1200); // the free OSRM demo server occasionally hiccups — one retry clears most of these
+    return await attempt();
+  }
+}
+
+// If a Google Maps API key is set in Settings, drive times are estimated with
+// Google's Distance Matrix Service instead — it takes addresses directly (no
+// separate geocoding step to fail) and reflects Google's own road data.
+let googleMapsLoading = null;
+function loadGoogleMaps(apiKey){
+  if(window.google && window.google.maps) return Promise.resolve();
+  if(googleMapsLoading) return googleMapsLoading;
+  googleMapsLoading = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(apiKey) + '&libraries=places';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Google Maps failed to load — check the API key'));
+    document.head.appendChild(script);
+  });
+  return googleMapsLoading;
+}
+async function estimateDriveTimesGoogle(routeId, apiKey){
+  const r = state.routes.find(x=>x.id===routeId);
+  const agencies = r.stops.map(s => agencyById(s.agencyId)).filter(Boolean);
+  await loadGoogleMaps(apiKey);
+  const service = new google.maps.DistanceMatrixService();
+  const segments = [];
+  let anyError = false;
+  for(let i=0; i<agencies.length-1; i++){
+    const from = agencies[i].address, to = agencies[i+1].address;
+    try{
+      const result = await new Promise((resolve, reject) => {
+        service.getDistanceMatrix({
+          origins:[from], destinations:[to],
+          travelMode: google.maps.TravelMode.DRIVING,
+          drivingOptions:{ departureTime: new Date(), trafficModel:'bestguess' }
+        }, (res, status) => status === 'OK' ? resolve(res) : reject(new Error(status)));
+      });
+      const el = result.rows[0].elements[0];
+      if(el.status !== 'OK') throw new Error(el.status);
+      segments.push({ minutes: Math.round(el.duration.value/60), km: Math.round(el.distance.value/100)/10 });
+    }catch(e){
+      segments.push(null);
+      anyError = true;
+    }
+  }
+  state.driveTimeCache[routeId] = { computing:false, segments, error:anyError, source:'google' };
+  render();
 }
 
 async function estimateDriveTimes(routeId){
@@ -568,12 +639,23 @@ async function estimateDriveTimes(routeId){
   if(!r || r.stops.length < 2) return;
   state.driveTimeCache[routeId] = { computing:true, segments:[], error:false };
   render();
+
+  const googleKey = state.settings.googleMapsApiKey;
+  if(googleKey){
+    try{
+      await estimateDriveTimesGoogle(routeId, googleKey);
+      return;
+    }catch(e){
+      showToast('Google Maps estimate failed — falling back to free routing');
+    }
+  }
+
   const agencies = r.stops.map(s => agencyById(s.agencyId)).filter(Boolean);
-  let geocodeFailed = false;
+  const failedNames = [];
   for(let i=0; i<agencies.length; i++){
     if(agencies[i].lat == null || agencies[i].lon == null){
       const ok = await ensureGeocoded(agencies[i]);
-      if(!ok) geocodeFailed = true;
+      if(!ok) failedNames.push(agencies[i].name);
       await sleep(1100); // respect Nominatim's ~1 request/second usage policy
     }
   }
@@ -589,9 +671,9 @@ async function estimateDriveTimes(routeId){
       segments.push(null);
       routingFailed = true;
     }
-    await sleep(200);
+    await sleep(400);
   }
-  state.driveTimeCache[routeId] = { computing:false, segments, error: geocodeFailed || routingFailed };
+  state.driveTimeCache[routeId] = { computing:false, segments, error: failedNames.length>0 || routingFailed, failedNames, source:'free' };
   render();
 }
 
@@ -786,7 +868,7 @@ function renderRouteCard(r){
         '<button class="ghost sm" data-action="estimate-drive" data-id="'+r.id+'" '+(dt&&dt.computing?'disabled':'')+'>'+
           (dt&&dt.computing ? 'Estimating…' : 'Estimate drive times') +
         '</button>'+
-        (dt && dt.error ? '<span class="addr">Some legs couldn\u2019t be estimated — check those addresses.</span>' : '')+
+        (dt && dt.error ? '<span class="addr">'+driveErrorMessage(dt)+'</span>' : '')+
       '</div>';
     }
 
@@ -816,6 +898,15 @@ function renderDriveSegment(dt, index){
   const seg = dt.segments && dt.segments[index];
   if(!seg) return '<span class="addr">drive time unavailable</span>';
   return '<span class="addr">&#8594; ~'+seg.minutes+' min drive ('+seg.km+' km)</span>';
+}
+
+function driveErrorMessage(dt){
+  if(!dt || !dt.error) return '';
+  if(dt.failedNames && dt.failedNames.length){
+    return 'Couldn\u2019t locate: '+dt.failedNames.map(escapeHtml).join(', ')+
+      '. Try a more complete address, or add coordinates manually on that agency\u2019s edit form.';
+  }
+  return 'Some legs couldn\u2019t be estimated — the free routing service may be temporarily unavailable. Try again in a moment, or add a Google Maps API key in Settings for a more reliable estimate.';
 }
 
 // ---- Route editor ----
@@ -872,7 +963,7 @@ function renderRouteEditor(){
     });
     html += '</ul>';
     if(dt && dt.error){
-      html += '<div class="addr" style="margin-top:6px;">Some legs couldn\u2019t be estimated — double check those addresses are complete.</div>';
+      html += '<div class="addr" style="margin-top:6px;">'+driveErrorMessage(dt)+'</div>';
     }
   }
   html += '</div>';
@@ -959,7 +1050,15 @@ function renderSettingsTab(){
 
   html += '<div class="card">'+
     '<h3 style="font-size:14px;margin-bottom:8px;">About drive-time estimates</h3>'+
-    '<div class="addr" style="line-height:1.6;">"Estimate drive times" on a route looks up each address (OpenStreetMap) and calculates a real road-based driving time and distance between consecutive stops (OSRM). Both are free public services — accurate for planning, but without live traffic and occasionally slow or briefly unavailable. Estimates are cached per agency so you only wait through the lookup once.</div>'+
+    '<div class="addr" style="line-height:1.6;">"Estimate drive times" on a route looks up each address (OpenStreetMap) and calculates a real road-based driving time and distance between consecutive stops (OSRM). Both are free public services — accurate for planning, but without live traffic and occasionally slow or briefly unavailable. Estimates are cached per agency so you only wait through the lookup once. If a specific address can\u2019t be found, you can enter its coordinates manually on that agency\u2019s edit form.</div>'+
+  '</div>';
+
+  html += '<div class="card">'+
+    '<h3 style="font-size:14px;margin-bottom:8px;">Optional: use Google Maps for estimates</h3>'+
+    '<div class="addr" style="line-height:1.6;margin-bottom:10px;">For live-traffic-aware driving times, add your own Google Maps API key. This requires a free Google Cloud account with the Maps JavaScript API and Distance Matrix API enabled — Google requires a credit card on file to activate billing, but personal use at this scale stays well within their monthly free credit. Restrict the key to your app\u2019s web address (HTTP referrer restriction) so it can\u2019t be used elsewhere if seen. Leave this blank to keep using the free option above.</div>'+
+    '<div class="field" style="max-width:420px;"><label>Google Maps API key</label>'+
+      '<input type="text" id="google-key-input" style="width:100%;" placeholder="AIza..." value="'+escapeHtml(state.settings.googleMapsApiKey||'')+'"></div>'+
+    '<button class="primary" style="margin-top:10px;" data-action="save-google-key">Save</button>'+
   '</div>';
   return html;
 }
@@ -1039,6 +1138,12 @@ function openAgencyModal(agencyId){
       '<div class="field"><label>Address</label><input type="text" id="f-address" value="'+escapeHtml(editing?editing.address:'')+'" placeholder="Street, city, state, zip"></div>'+
       '<div class="field"><label>Principal name</label><input type="text" id="f-principal" value="'+escapeHtml(editing?editing.principal:'')+'"></div>'+
       '<div class="field"><label>Phone number</label><input type="tel" id="f-phone" value="'+escapeHtml(editing?editing.phone:'')+'"></div>'+
+      '<div class="section-label" style="margin-top:6px;">Coordinates (optional)</div>'+
+      '<div class="addr" style="margin-bottom:8px;">Only needed if drive-time estimates can\u2019t find this address automatically. In Google Maps, right-click the pin and tap the lat/long shown at the top to copy it.</div>'+
+      '<div class="row">'+
+        '<div class="field" style="flex:1;"><label>Latitude</label><input type="text" id="f-lat" value="'+(editing&&editing.lat!=null?editing.lat:'')+'" placeholder="e.g. 29.7604"></div>'+
+        '<div class="field" style="flex:1;"><label>Longitude</label><input type="text" id="f-lon" value="'+(editing&&editing.lon!=null?editing.lon:'')+'" placeholder="e.g. -95.3698"></div>'+
+      '</div>'+
       '<div class="modal-actions">'+
         '<button data-action="close-modal">Cancel</button>'+
         '<button class="primary" data-action="save-agency" data-id="'+(editing?editing.id:'')+'">'+(editing?'Save changes':'Add agency')+'</button>'+
@@ -1169,12 +1274,22 @@ function onGlobalClick(e){
     const address = document.getElementById('f-address').value.trim();
     const principal = document.getElementById('f-principal').value.trim();
     const phone = document.getElementById('f-phone').value.trim();
+    const latRaw = document.getElementById('f-lat').value.trim();
+    const lonRaw = document.getElementById('f-lon').value.trim();
     if(!name || !address){ showToast('Name and address are required'); return; }
+    const lat = latRaw ? parseFloat(latRaw) : null;
+    const lon = lonRaw ? parseFloat(lonRaw) : null;
+    if((latRaw && isNaN(lat)) || (lonRaw && isNaN(lon))){ showToast('Coordinates must be numbers'); return; }
     if(id){
       const a = agencyById(id);
+      const addressChanged = a.address !== address;
       Object.assign(a, {name,address,principal,phone});
+      if(lat!=null && lon!=null){ a.lat = lat; a.lon = lon; }
+      else if(addressChanged){ delete a.lat; delete a.lon; } // re-geocode next time — old coords no longer match
     } else {
-      state.agencies.push({id:uid(), name, address, principal, phone, createdAt:new Date().toISOString()});
+      const agency = {id:uid(), name, address, principal, phone, createdAt:new Date().toISOString()};
+      if(lat!=null && lon!=null){ agency.lat = lat; agency.lon = lon; }
+      state.agencies.push(agency);
     }
     saveAgencies();
     document.getElementById('modal-root').innerHTML='';
@@ -1273,6 +1388,12 @@ function onGlobalClick(e){
     state.settings.staleDays = (isFinite(val) && val > 0) ? val : 30;
     saveSettings();
     showToast('Alert threshold saved');
+  }
+  else if(action === 'save-google-key'){
+    const key = document.getElementById('google-key-input').value.trim();
+    state.settings.googleMapsApiKey = key;
+    saveSettings();
+    showToast(key ? 'Google Maps key saved' : 'Google Maps key removed — using free estimates');
   }
   else if(action === 'export-apple'){
     const r = state.routes.find(x=>x.id===id);
