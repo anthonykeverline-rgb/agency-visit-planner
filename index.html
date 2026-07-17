@@ -226,6 +226,24 @@
   }
   .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
 
+  .rep-gate{min-height:80vh;display:flex;align-items:center;justify-content:center;padding:20px;}
+  .rep-gate-inner{background:var(--paper-raised);border:1.5px solid var(--line-strong);border-radius:16px;padding:32px 28px;max-width:380px;width:100%;}
+  .rep-gate-inner .wordmark{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:28px;border-bottom:4px solid var(--route);display:inline-block;padding-bottom:2px;}
+  .rep-gate-inner .tagline{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:16px;}
+  .rep-list{display:flex;flex-direction:column;gap:8px;}
+  .rep-card{
+    text-align:left;padding:12px 14px;border-radius:8px;border:1.5px solid var(--line-strong);
+    background:#fff;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:14px;
+  }
+  .rep-card:hover{background:var(--route-soft);border-color:var(--route);}
+  .owner-chip{
+    font-family:'IBM Plex Mono',monospace;font-size:10.5px;background:var(--paper);
+    color:var(--muted);padding:2px 7px;border-radius:999px;border:1px solid var(--line-strong);white-space:nowrap;
+  }
+  .scope-toggle{display:flex;border:1.5px solid var(--ink);border-radius:8px;overflow:hidden;}
+  .scope-toggle button{border:none;border-radius:0;padding:7px 14px;}
+  .scope-toggle button.active{background:var(--ink);color:#fff;}
+
   .stale-banner{
     background:var(--pending-soft);border:1.5px solid var(--pending);border-radius:8px;
     padding:10px 14px;margin-bottom:16px;font-size:13px;color:#7A2626;
@@ -271,6 +289,11 @@ const state = {
   agencies: [],
   routes: [],
   visits: [],
+  reps: [],
+  currentRepId: null,
+  agencyViewScope: 'mine', // 'mine' | 'all'
+  repGateStep: 'pick', // 'pick' | 'pin' | 'new'
+  repGateSelectedId: null,
   settings: { staleDays: 30 },
   editingRouteId: null,
   agencySearch: '',
@@ -279,8 +302,18 @@ const state = {
   syncStatus: 'unconfigured', // unconfigured | connected | error | syncing
   lastSyncedAt: null,
   staleBannerOpen: false,
-  driveTimeCache: {} // routeId -> { computing: bool, segments: [{minutes, km}], error: bool }
+  driveTimeCache: {} // routeId -> { computing: bool, segments: [{minutes, miles}], error: bool }
 };
+
+function repById(id){ return state.reps.find(r => r.id === id); }
+function currentRep(){ return repById(state.currentRepId); }
+function myAgencies(){ return state.agencies.filter(a => a.ownerId === state.currentRepId); }
+function getRememberedRepId(){
+  try{ return localStorage.getItem('avp_current_rep') || null; }catch(e){ return null; }
+}
+function rememberRepId(id){
+  try{ if(id) localStorage.setItem('avp_current_rep', id); else localStorage.removeItem('avp_current_rep'); }catch(e){}
+}
 
 const WEEKDAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
 const VISIT_TYPES = [
@@ -342,15 +375,16 @@ async function remoteSet(key, value){
 
 async function loadState(){
   const endpoint = getEndpoint();
-  const keys = ['agencies','routes','visits','settings'];
+  const keys = ['agencies','routes','visits','settings','reps'];
   if(endpoint){
     state.syncStatus = 'syncing';
     try{
-      const [a, r, v, st] = await Promise.all(keys.map(remoteGet));
+      const [a, r, v, st, rp] = await Promise.all(keys.map(remoteGet));
       state.agencies = a || [];
       state.routes = r || [];
       state.visits = v || [];
       state.settings = st || { staleDays: 30 };
+      state.reps = rp || [];
       keys.forEach(k => localSet(k, state[k]));
       state.syncStatus = 'connected';
       state.lastSyncedAt = new Date();
@@ -359,6 +393,7 @@ async function loadState(){
       state.routes = localGet('routes') || [];
       state.visits = localGet('visits') || [];
       state.settings = localGet('settings') || { staleDays: 30 };
+      state.reps = localGet('reps') || [];
       state.syncStatus = 'error';
     }
   } else {
@@ -366,9 +401,12 @@ async function loadState(){
     state.routes = localGet('routes') || [];
     state.visits = localGet('visits') || [];
     state.settings = localGet('settings') || { staleDays: 30 };
+    state.reps = localGet('reps') || [];
     state.syncStatus = 'unconfigured';
   }
   migrateRouteStops();
+  const remembered = getRememberedRepId();
+  if(remembered && repById(remembered)) state.currentRepId = remembered;
   state.loaded = true;
   render();
 }
@@ -405,6 +443,7 @@ async function persist(key, value){
 const saveAgencies = () => persist('agencies', state.agencies);
 const saveRoutes = () => persist('routes', state.routes);
 const saveVisits = () => persist('visits', state.visits);
+const saveReps = () => persist('reps', state.reps);
 const saveSettings = () => persist('settings', state.settings);
 
 async function syncNow(){
@@ -449,19 +488,21 @@ function lastVisit(agencyId){
   return vs[0] || null;
 }
 function yearStats(year){
-  const total = state.agencies.length;
-  const visitedIds = new Set(state.visits.filter(v => new Date(v.date).getFullYear() === year).map(v=>v.agencyId));
-  const visitedCount = [...visitedIds].filter(id => agencyById(id)).length;
+  const mine = myAgencies();
+  const total = mine.length;
+  const myIds = new Set(mine.map(a=>a.id));
+  const visitedIds = new Set(state.visits.filter(v => myIds.has(v.agencyId) && new Date(v.date).getFullYear() === year).map(v=>v.agencyId));
+  const visitedCount = visitedIds.size;
   const pct = total ? Math.round((visitedCount/total)*1000)/10 : 0;
   const byType = {'in-person':0,'virtual':0,'phone':0};
-  state.visits.filter(v => new Date(v.date).getFullYear() === year).forEach(v => { byType[v.type] = (byType[v.type]||0)+1; });
+  state.visits.filter(v => myIds.has(v.agencyId) && new Date(v.date).getFullYear() === year).forEach(v => { byType[v.type] = (byType[v.type]||0)+1; });
   return { total, visitedCount, pct, byType, visitedIds };
 }
 
 function staleAgencies(){
   const days = state.settings.staleDays || 30;
   const cutoff = Date.now() - days*24*60*60*1000;
-  return state.agencies.filter(a => {
+  return myAgencies().filter(a => {
     const lv = lastVisit(a.id);
     return !lv || new Date(lv.date).getTime() < cutoff;
   }).sort((a,b) => {
@@ -495,7 +536,7 @@ function handleCsvFile(file){
       results.data.forEach(row => {
         const m = mapRow(row);
         if(!m.name || !m.address){ skipped++; return; }
-        state.agencies.push({ id: uid(), name:m.name, address:m.address, principal:m.principal, phone:m.phone, createdAt: new Date().toISOString() });
+        state.agencies.push({ id: uid(), name:m.name, address:m.address, principal:m.principal, phone:m.phone, ownerId: state.currentRepId, createdAt: new Date().toISOString() });
         added++;
       });
       saveAgencies();
@@ -579,7 +620,7 @@ async function driveSegment(from, to){
     if(!res.ok) throw new Error('routing failed');
     const data = await res.json();
     if(!data.routes || !data.routes[0]) throw new Error('no route');
-    return { minutes: Math.round(data.routes[0].duration/60), km: Math.round(data.routes[0].distance/100)/10 };
+    return { minutes: Math.round(data.routes[0].duration/60), miles: Math.round(data.routes[0].distance/160.9344)/10 };
   };
   try{
     return await attempt();
@@ -624,7 +665,7 @@ async function estimateDriveTimesGoogle(routeId, apiKey){
       });
       const el = result.rows[0].elements[0];
       if(el.status !== 'OK') throw new Error(el.status);
-      segments.push({ minutes: Math.round(el.duration.value/60), km: Math.round(el.distance.value/100)/10 });
+      segments.push({ minutes: Math.round(el.duration.value/60), miles: Math.round(el.distance.value/160.9344)/10 });
     }catch(e){
       segments.push(null);
       anyError = true;
@@ -681,6 +722,7 @@ async function estimateDriveTimes(routeId){
 function render(){
   const app = document.getElementById('app');
   if(!state.loaded){ app.innerHTML = '<div style="padding:60px 0;text-align:center;color:var(--muted)">Loading manifest…</div>'; return; }
+  if(!currentRep()){ app.innerHTML = renderRepGate(); attachGlobalListeners(); return; }
   app.innerHTML = renderTopbar() + renderTabs() + renderStaleBanner() + renderBody();
   attachGlobalListeners();
 }
@@ -713,6 +755,49 @@ function renderStaleBanner(){
   return html;
 }
 
+function renderRepGate(){
+  const switching = state.reps.length > 0;
+  let html = '<div class="rep-gate">'+
+    '<div class="rep-gate-inner">'+
+      '<div class="wordmark" style="color:var(--navy);">GEICO</div>'+
+      '<div class="tagline" style="color:var(--navy);margin-bottom:18px;">For Your Agency</div>';
+
+  if(state.repGateStep === 'pin'){
+    const rep = repById(state.repGateSelectedId);
+    html += '<h3 style="margin-bottom:10px;">Welcome back, '+escapeHtml(rep?rep.name:'')+'</h3>'+
+      '<div class="addr" style="margin-bottom:12px;">Enter your PIN to continue.</div>'+
+      '<div class="field"><input type="text" inputmode="numeric" id="rep-pin-input" placeholder="PIN" style="width:100%;font-size:18px;text-align:center;letter-spacing:.2em;" maxlength="8" autofocus></div>'+
+      '<div id="rep-pin-error" class="addr" style="color:var(--pending);min-height:16px;"></div>'+
+      '<div class="row" style="margin-top:10px;">'+
+        '<button data-action="rep-gate-back">&larr; Back</button>'+
+        '<button class="primary" data-action="confirm-rep-pin" data-id="'+rep.id+'">Continue</button>'+
+      '</div>';
+  } else if(state.repGateStep === 'new'){
+    html += '<h3 style="margin-bottom:10px;">'+(switching?'Add a new rep':'Welcome — set up your name')+'</h3>'+
+      '<div class="addr" style="margin-bottom:12px;">This just tells the app whose agencies to show — it\u2019s not a real login, so don\u2019t reuse a sensitive password as your PIN.</div>'+
+      '<div class="field"><label>Your name</label><input type="text" id="rep-name-input" style="width:100%;" placeholder="e.g. Sam Rivera"></div>'+
+      '<div class="field"><label>Choose a PIN (4+ digits)</label><input type="text" inputmode="numeric" id="rep-pin-new-input" style="width:100%;" placeholder="e.g. 1234"></div>'+
+      '<div id="rep-new-error" class="addr" style="color:var(--pending);min-height:16px;"></div>'+
+      '<div class="row" style="margin-top:10px;">'+
+        (switching ? '<button data-action="rep-gate-back">&larr; Back</button>' : '')+
+        '<button class="primary" data-action="create-rep">'+(switching?'Add rep':'Get started')+'</button>'+
+      '</div>';
+  } else {
+    html += '<h3 style="margin-bottom:4px;">'+(switching?'Who\u2019s using this?':'Welcome')+'</h3>'+
+      '<div class="addr" style="margin-bottom:14px;">'+(switching?'Pick your name to see your own agencies and routes.':'Set up your name to get started — your existing list will be attached to it.')+'</div>';
+    if(switching){
+      html += '<div class="rep-list">';
+      [...state.reps].sort((a,b)=>a.name.localeCompare(b.name)).forEach(r => {
+        html += '<button class="rep-card" data-action="select-rep" data-id="'+r.id+'">'+escapeHtml(r.name)+'</button>';
+      });
+      html += '</div>';
+    }
+    html += '<button class="ghost" style="margin-top:14px;width:100%;" data-action="rep-gate-new">'+(switching?'+ Add a new rep':'Set up my name')+'</button>';
+  }
+  html += '</div></div>';
+  return html;
+}
+
 function renderTopbar(){
   const statusMap = {
     connected: {label:'Synced', color:'visited-in-person'},
@@ -721,13 +806,16 @@ function renderTopbar(){
     unconfigured: {label:'Local only', color:'pending'}
   };
   const s = statusMap[state.syncStatus] || statusMap.unconfigured;
+  const rep = currentRep();
   return '<div class="topbar">'+
     '<div class="brand-mark">'+
       '<div class="wordmark">GEICO</div>'+
       '<div class="tagline">For Your Agency</div>'+
       '<div class="sub">agency visit routing &amp; coverage log</div>'+
     '</div>'+
-    '<div class="year-pill">'+state.agencies.length+' agencies on file<br>'+state.routes.length+' saved routes<br>'+
+    '<div class="year-pill">'+
+      '<div style="margin-bottom:4px;">Signed in as <b>'+escapeHtml(rep?rep.name:'')+'</b> &middot; <button class="ghost sm" style="padding:2px 6px;" data-action="rep-gate-open">Switch</button></div>'+
+      myAgencies().length+' of your agencies<br>'+state.routes.filter(r=>r.ownerId===state.currentRepId).length+' of your routes<br>'+
       '<span class="stamp '+s.color+'" style="margin-top:4px;"><span class="dot '+s.color+'"></span>'+s.label+'</span>'+
     '</div>'+
   '</div>'+
@@ -736,8 +824,8 @@ function renderTopbar(){
 
 function renderTabs(){
   const tabs = [
-    {id:'agencies', label:'Agencies', count: state.agencies.length},
-    {id:'routes', label:'Routes', count: state.routes.length},
+    {id:'agencies', label:'Agencies', count: state.agencyViewScope==='all' ? state.agencies.length : myAgencies().length},
+    {id:'routes', label:'Routes', count: state.routes.filter(r=>r.ownerId===state.currentRepId).length},
     {id:'dashboard', label:'Coverage', count: null},
     {id:'settings', label:'Settings', count: null}
   ];
@@ -760,7 +848,9 @@ function renderBody(){
 // ---- Agencies tab ----
 function renderAgenciesTab(){
   const q = state.agencySearch.trim().toLowerCase();
-  const list = state.agencies.filter(a =>
+  const scope = state.agencyViewScope;
+  const base = scope === 'all' ? state.agencies : myAgencies();
+  const list = base.filter(a =>
     !q || a.name.toLowerCase().includes(q) || a.address.toLowerCase().includes(q) || (a.principal||'').toLowerCase().includes(q)
   ).sort((a,b)=>a.name.localeCompare(b.name));
 
@@ -768,6 +858,10 @@ function renderAgenciesTab(){
     '<div class="row-between">'+
       '<div class="row">'+
         '<input class="search-input" type="text" id="agency-search" placeholder="Search agencies by name, address, or principal" value="'+escapeHtml(state.agencySearch)+'">'+
+        '<div class="scope-toggle">'+
+          '<button class="'+(scope==='mine'?'active':'')+'" data-action="set-agency-scope" data-scope="mine">My agencies</button>'+
+          '<button class="'+(scope==='all'?'active':'')+'" data-action="set-agency-scope" data-scope="all">All agencies</button>'+
+        '</div>'+
       '</div>'+
       '<div class="row">'+
         '<label style="display:inline-block;margin:0;"><button class="ghost" data-action="pick-csv">Import CSV</button></label>'+
@@ -775,28 +869,33 @@ function renderAgenciesTab(){
         '<button class="primary" data-action="new-agency">Add agency</button>'+
       '</div>'+
     '</div>'+
-    '<div style="margin-top:10px;" class="addr">CSV columns recognized: name / agency, address, principal / director, phone / telephone — any order, header names are flexible.</div>'+
+    '<div style="margin-top:10px;" class="addr">CSV columns recognized: name / agency, address, principal / director, phone / telephone — any order, header names are flexible. Imported agencies are added to your own list.</div>'+
   '</div>';
 
   if(list.length === 0){
-    html += '<div class="empty"><div class="empty-title">No agencies yet</div>'+
+    html += '<div class="empty"><div class="empty-title">'+(scope==='all'?'No agencies on file yet':'No agencies in your list yet')+'</div>'+
       'Add one manually or import a CSV to get your list started.</div>';
     return html;
   }
 
-  html += '<div class="table-scroll"><table><thead><tr><th>Agency</th><th>Principal</th><th>Phone</th><th>Last visit</th><th></th></tr></thead><tbody>';
+  html += '<div class="table-scroll"><table><thead><tr><th>Agency</th><th>Principal</th><th>Phone</th><th>Last visit</th>'+(scope==='all'?'<th>Rep</th>':'')+'<th></th></tr></thead><tbody>';
   list.forEach(a => {
     const lv = lastVisit(a.id);
     const vt = lv ? VISIT_TYPES.find(v=>v.id===lv.type) : null;
+    const isMine = a.ownerId === state.currentRepId;
+    const owner = repById(a.ownerId);
     html += '<tr>'+
       '<td><div class="agency-name">'+escapeHtml(a.name)+'</div><div class="addr">'+escapeHtml(a.address)+'</div></td>'+
       '<td>'+escapeHtml(a.principal||'—')+'</td>'+
       '<td class="mono">'+escapeHtml(a.phone||'—')+'</td>'+
       '<td>'+(lv ? '<span class="stamp '+vt.color+'"><span class="dot '+vt.color+'"></span>'+vt.label+'</span><div class="addr" style="margin-top:4px;">'+new Date(lv.date).toLocaleDateString()+'</div>' : '<span class="stamp pending"><span class="dot pending"></span>not yet visited</span>')+'</td>'+
+      (scope==='all' ? '<td><span class="owner-chip">'+escapeHtml(owner?owner.name:'unclaimed')+'</span></td>' : '')+
       '<td style="white-space:nowrap;">'+
-        '<button class="ghost sm" data-action="mark-visited" data-id="'+a.id+'">Log visit</button> '+
-        '<button class="ghost sm" data-action="edit-agency" data-id="'+a.id+'">Edit</button> '+
-        '<button class="ghost sm" data-action="delete-agency" data-id="'+a.id+'">Delete</button>'+
+        (isMine ?
+          ('<button class="ghost sm" data-action="mark-visited" data-id="'+a.id+'">Log visit</button> '+
+           '<button class="ghost sm" data-action="edit-agency" data-id="'+a.id+'">Edit</button> '+
+           '<button class="ghost sm" data-action="delete-agency" data-id="'+a.id+'">Delete</button>')
+          : '<span class="addr">view only</span>')+
       '</td>'+
     '</tr>';
   });
@@ -806,18 +905,19 @@ function renderAgenciesTab(){
 
 // ---- Routes tab ----
 function renderRoutesTab(){
+  const myRoutes = state.routes.filter(r => r.ownerId === state.currentRepId);
   let html = '<div class="row-between" style="margin-bottom:14px;">'+
     '<div class="addr">Build a route for a day of the week, then export it straight to your maps app.</div>'+
     '<button class="primary" data-action="new-route">New route</button>'+
   '</div>';
 
-  if(state.routes.length === 0){
+  if(myRoutes.length === 0){
     html += '<div class="empty"><div class="empty-title">No routes yet</div>Create a route and assign agencies to a day of the week.</div>';
     return html;
   }
 
   const byDay = {};
-  state.routes.forEach(r => { (byDay[r.day] = byDay[r.day]||[]).push(r); });
+  myRoutes.forEach(r => { (byDay[r.day] = byDay[r.day]||[]).push(r); });
   const dayOrder = WEEKDAYS.filter(d => byDay[d]);
   Object.keys(byDay).forEach(d => { if(!dayOrder.includes(d)) dayOrder.push(d); });
 
@@ -897,7 +997,7 @@ function renderDriveSegment(dt, index){
   if(!dt || dt.computing) return '<span class="addr">&middot;&middot;&middot;</span>';
   const seg = dt.segments && dt.segments[index];
   if(!seg) return '<span class="addr">drive time unavailable</span>';
-  return '<span class="addr">&#8594; ~'+seg.minutes+' min drive ('+seg.km+' km)</span>';
+  return '<span class="addr">&#8594; ~'+seg.minutes+' min drive ('+seg.miles+' mi)</span>';
 }
 
 function driveErrorMessage(dt){
@@ -914,7 +1014,7 @@ function renderRouteEditor(){
   const r = state.routes.find(x => x.id === state.editingRouteId);
   if(!r) { state.editingRouteId = null; return renderRoutesTab(); }
   const assigned = new Set(r.stops.map(s=>s.agencyId));
-  const sorted = [...state.agencies].sort((a,b)=>a.name.localeCompare(b.name));
+  const sorted = myAgencies().sort((a,b)=>a.name.localeCompare(b.name));
   const dt = state.driveTimeCache[r.id];
 
   let html = '<div class="row" style="margin-bottom:14px;">'+
@@ -1011,6 +1111,19 @@ function renderSettingsTab(){
   const s = statusMap[state.syncStatus] || statusMap.unconfigured;
 
   let html = '<div class="card">'+
+    '<div class="row-between"><h3 style="font-size:15px;">Reps on this sheet</h3>'+
+      '<button class="ghost sm" data-action="rep-gate-open">Switch rep</button>'+
+    '</div>'+
+    '<div class="addr" style="margin:8px 0 10px;">Everyone using this same Google Sheet shares one synced dataset — each rep just sees their own agencies and routes by default. The name/PIN sign-in isn\u2019t a real login (this sheet is reachable by anyone with the link), it\u2019s only there to keep lists from getting mixed up on a shared device.</div>'+
+    '<ul class="stop-list" style="margin:0;">'+
+    state.reps.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(r => {
+      const count = state.agencies.filter(a=>a.ownerId===r.id).length;
+      return '<li class="stop-item" style="padding:8px 0;"><div class="stop-body"><div class="stop-name">'+escapeHtml(r.name)+(r.id===state.currentRepId?' <span class="owner-chip">you</span>':'')+'</div><div class="stop-addr">'+count+' agenc'+(count===1?'y':'ies')+'</div></div></li>';
+    }).join('')+
+    '</ul>'+
+  '</div>';
+
+  html += '<div class="card">'+
     '<h3 style="font-size:15px;margin-bottom:8px;">Overdue visit alerts</h3>'+
     '<div class="addr" style="margin-bottom:12px;">Shown as a banner at the top of every tab when agencies haven\u2019t been visited recently.</div>'+
     '<div class="field" style="max-width:220px;"><label>Alert after this many days</label>'+
@@ -1111,7 +1224,7 @@ function renderDashboardTab(){
   '</div>';
 
   // not yet visited
-  const notVisited = state.agencies.filter(a => !s.visitedIds.has(a.id)).sort((a,b)=>a.name.localeCompare(b.name));
+  const notVisited = myAgencies().filter(a => !s.visitedIds.has(a.id)).sort((a,b)=>a.name.localeCompare(b.name));
   html += '<div class="section-label">Not yet visited in '+year+' ('+notVisited.length+')</div>';
   if(notVisited.length === 0){
     html += '<div class="banner">Every agency on file has been reached in '+year+'.</div>';
@@ -1253,10 +1366,53 @@ function onGlobalClick(e){
   const action = btn.dataset.action;
   const id = btn.dataset.id;
 
-  if(action === 'set-tab'){ state.tab = btn.dataset.tab; state.editingRouteId = null; render(); }
+  if(action === 'select-rep'){ state.repGateStep = 'pin'; state.repGateSelectedId = id; render(); }
+  else if(action === 'confirm-rep-pin'){
+    const rep = repById(id);
+    const entered = document.getElementById('rep-pin-input').value.trim();
+    if(!rep){ return; }
+    if(entered !== rep.pin){
+      document.getElementById('rep-pin-error').textContent = 'That PIN doesn\u2019t match — try again.';
+      return;
+    }
+    state.currentRepId = rep.id;
+    rememberRepId(rep.id);
+    state.repGateStep = 'pick';
+    state.repGateSelectedId = null;
+    render();
+    showToast('Signed in as '+rep.name);
+  }
+  else if(action === 'rep-gate-new'){ state.repGateStep = 'new'; render(); }
+  else if(action === 'rep-gate-back'){ state.repGateStep = 'pick'; state.repGateSelectedId = null; render(); }
+  else if(action === 'rep-gate-open'){ state.currentRepId = null; state.repGateStep = 'pick'; render(); }
+  else if(action === 'create-rep'){
+    const name = document.getElementById('rep-name-input').value.trim();
+    const pin = document.getElementById('rep-pin-new-input').value.trim();
+    const errEl = document.getElementById('rep-new-error');
+    if(!name){ errEl.textContent = 'Enter your name.'; return; }
+    if(pin.length < 4){ errEl.textContent = 'PIN needs to be at least 4 digits.'; return; }
+    if(state.reps.some(r=>r.name.toLowerCase()===name.toLowerCase())){ errEl.textContent = 'That name is already taken — pick another or ask them to switch to it.'; return; }
+    const isFirstRepEver = state.reps.length === 0;
+    const rep = { id: uid(), name, pin };
+    state.reps.push(rep);
+    if(isFirstRepEver){
+      // Claim any pre-existing data created before multi-rep support existed.
+      state.agencies.forEach(a => { if(!a.ownerId) a.ownerId = rep.id; });
+      state.routes.forEach(r => { if(!r.ownerId) r.ownerId = rep.id; });
+      saveAgencies(); saveRoutes();
+    }
+    saveReps();
+    state.currentRepId = rep.id;
+    rememberRepId(rep.id);
+    state.repGateStep = 'pick';
+    render();
+    showToast('Welcome, '+rep.name+'!');
+  }
+  else if(action === 'set-tab'){ state.tab = btn.dataset.tab; state.editingRouteId = null; render(); }
   else if(action === 'close-modal'){ document.getElementById('modal-root').innerHTML=''; }
   else if(action === 'pick-csv'){ document.getElementById('csv-input').click(); }
   else if(action === 'new-agency'){ openAgencyModal(null); }
+  else if(action === 'set-agency-scope'){ state.agencyViewScope = btn.dataset.scope; render(); }
   else if(action === 'edit-agency'){ openAgencyModal(id); }
   else if(action === 'delete-agency'){
     showConfirmModal('Delete this agency? Its visit history will also be removed.', function(){
@@ -1287,7 +1443,7 @@ function onGlobalClick(e){
       if(lat!=null && lon!=null){ a.lat = lat; a.lon = lon; }
       else if(addressChanged){ delete a.lat; delete a.lon; } // re-geocode next time — old coords no longer match
     } else {
-      const agency = {id:uid(), name, address, principal, phone, createdAt:new Date().toISOString()};
+      const agency = {id:uid(), name, address, principal, phone, ownerId: state.currentRepId, createdAt:new Date().toISOString()};
       if(lat!=null && lon!=null){ agency.lat = lat; agency.lon = lon; }
       state.agencies.push(agency);
     }
@@ -1315,7 +1471,7 @@ function onGlobalClick(e){
     if(agencyId) openVisitModal(agencyId);
   }
   else if(action === 'new-route'){
-    const r = {id:uid(), name:'New route', day:'Monday', date:'', stops:[]};
+    const r = {id:uid(), name:'New route', day:'Monday', date:'', stops:[], ownerId: state.currentRepId};
     state.routes.push(r);
     saveRoutes();
     state.editingRouteId = r.id;
