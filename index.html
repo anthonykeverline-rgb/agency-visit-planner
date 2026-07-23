@@ -243,6 +243,11 @@
   .scope-toggle{display:flex;border:1.5px solid var(--ink);border-radius:8px;overflow:hidden;}
   .scope-toggle button{border:none;border-radius:0;padding:7px 14px;}
   .scope-toggle button.active{background:var(--ink);color:#fff;}
+  .map-box{
+    width:100%;height:520px;border-radius:var(--radius);border:1.5px solid var(--line-strong);
+    background:var(--paper-raised);
+  }
+  .leaflet-popup-content{margin:10px 12px;}
 
   .stale-banner{
     background:var(--pending-soft);border:1.5px solid var(--pending);border-radius:8px;
@@ -274,6 +279,7 @@
     .stop-item .drag-handle,.stop-item .stop-num{order:0;}
     .stop-item select,.stop-item button{order:2;}
     .drive-seg{padding-left:4px;}
+    .map-box{height:380px;}
   }
 </style>
 </head>
@@ -292,6 +298,7 @@ const state = {
   reps: [],
   currentRepId: null,
   agencyViewScope: 'mine', // 'mine' | 'all'
+  mapViewScope: 'mine', // 'mine' | 'all'
   repGateStep: 'pick', // 'pick' | 'pin' | 'new'
   repGateSelectedId: null,
   settings: { staleDays: 30 },
@@ -826,6 +833,7 @@ function renderTabs(){
   const tabs = [
     {id:'agencies', label:'Agencies', count: state.agencyViewScope==='all' ? state.agencies.length : myAgencies().length},
     {id:'routes', label:'Routes', count: state.routes.filter(r=>r.ownerId===state.currentRepId).length},
+    {id:'map', label:'Map', count: null},
     {id:'dashboard', label:'Coverage', count: null},
     {id:'settings', label:'Settings', count: null}
   ];
@@ -840,6 +848,7 @@ function renderBody(){
   if(state.editingRouteId !== null) return renderRouteEditor();
   if(state.tab === 'agencies') return renderAgenciesTab();
   if(state.tab === 'routes') return renderRoutesTab();
+  if(state.tab === 'map') return renderMapTab();
   if(state.tab === 'dashboard') return renderDashboardTab();
   if(state.tab === 'settings') return renderSettingsTab();
   return '';
@@ -1176,6 +1185,134 @@ function renderSettingsTab(){
   return html;
 }
 
+// ---- Map tab ----
+function renderMapTab(){
+  const scope = state.mapViewScope;
+  const list = (scope === 'all' ? state.agencies : myAgencies()).filter(a => a.address);
+
+  let html = '<div class="row-between" style="margin-bottom:14px;">'+
+    '<div class="addr">Hover a pin for the name, or click it for the full card.</div>'+
+    '<div class="scope-toggle">'+
+      '<button class="'+(scope==='mine'?'active':'')+'" data-action="set-map-scope" data-scope="mine">My agencies</button>'+
+      '<button class="'+(scope==='all'?'active':'')+'" data-action="set-map-scope" data-scope="all">All agencies</button>'+
+    '</div>'+
+  '</div>';
+
+  if(list.length === 0){
+    html += '<div class="empty"><div class="empty-title">Nothing to map yet</div>Add an agency with an address first.</div>';
+    return html;
+  }
+
+  html += '<div id="map-status" class="addr" style="margin-bottom:8px;"></div>'+
+    '<div id="agency-map" class="map-box"></div>'+
+    '<div class="row" style="margin-top:10px;gap:16px;">'+
+      '<span class="addr"><span class="dot visited-in-person" style="display:inline-block;"></span> visited in '+state.dashboardYear+'</span>'+
+      '<span class="addr"><span class="dot pending" style="display:inline-block;"></span> not yet visited</span>'+
+    '</div>';
+  return html;
+}
+
+// Leaflet + OpenStreetMap — free, no API key. Loaded lazily so the library
+// only downloads for people who actually open the Map tab.
+let leafletLoading = null;
+function loadLeaflet(){
+  if(window.L) return Promise.resolve();
+  if(leafletLoading) return leafletLoading;
+  leafletLoading = new Promise((resolve, reject) => {
+    const css = document.createElement('link');
+    css.rel = 'stylesheet';
+    css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+    document.head.appendChild(css);
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Map library failed to load — check your connection'));
+    document.head.appendChild(script);
+  });
+  return leafletLoading;
+}
+
+let mapInstance = null;
+let mapViewLoading = false;
+async function initMapView(){
+  if(mapViewLoading) return;
+  mapViewLoading = true;
+  try{
+    await initMapViewInner();
+  } finally {
+    mapViewLoading = false;
+  }
+}
+async function initMapViewInner(){
+  const statusEl = document.getElementById('map-status');
+  const mapEl = document.getElementById('agency-map');
+  if(!mapEl) return; // user navigated away before this resolved
+
+  try{
+    if(statusEl) statusEl.textContent = 'Loading map…';
+    await loadLeaflet();
+  }catch(e){
+    if(statusEl) statusEl.textContent = 'Could not load the map library — check your connection and reopen this tab.';
+    return;
+  }
+
+  const scope = state.mapViewScope;
+  const list = (scope === 'all' ? state.agencies : myAgencies()).filter(a => a.address);
+  const missing = list.filter(a => a.lat == null || a.lon == null);
+
+  if(missing.length){
+    for(let i=0; i<missing.length; i++){
+      if(!document.getElementById('agency-map')) return; // left the tab mid-geocode
+      if(statusEl) statusEl.textContent = 'Locating agencies… ('+(i+1)+' of '+missing.length+')';
+      await ensureGeocoded(missing[i]);
+      await sleep(1100); // respect Nominatim's ~1 request/second usage policy
+    }
+    saveAgencies();
+  }
+  if(!document.getElementById('agency-map')) return;
+
+  const located = list.filter(a => a.lat != null && a.lon != null);
+  const unlocated = list.length - located.length;
+  if(statusEl){
+    statusEl.textContent = unlocated
+      ? unlocated + ' agenc'+(unlocated===1?'y':'ies')+' couldn\u2019t be placed on the map — add coordinates manually on their edit form.'
+      : '';
+  }
+
+  try{ if(mapInstance){ mapInstance.remove(); mapInstance = null; } }catch(e){}
+  if(located.length === 0) return;
+
+  mapInstance = L.map('agency-map');
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors'
+  }).addTo(mapInstance);
+
+  const markers = [];
+  located.forEach(a => {
+    const visited = visitsForAgencyYear(a.id, state.dashboardYear).length > 0;
+    const color = visited ? '#C98A1B' : '#B23B3B';
+    const marker = L.circleMarker([a.lat, a.lon], {
+      radius: 9, color:'#17242E', weight:1.5, fillColor: color, fillOpacity: 0.9
+    }).addTo(mapInstance);
+    marker.bindTooltip(escapeHtml(a.name), { direction:'top', offset:[0,-6] });
+    const phoneLink = a.phone ? '<a href="tel:'+escapeHtml(a.phone.replace(/[^\d+]/g,''))+'">'+escapeHtml(a.phone)+'</a>' : '—';
+    marker.bindPopup(
+      '<div style="font-family:\'Space Grotesk\',sans-serif;font-weight:600;font-size:13.5px;margin-bottom:2px;">'+escapeHtml(a.name)+'</div>'+
+      '<div style="font-family:\'Public Sans\',sans-serif;font-size:12.5px;color:#3E4C55;line-height:1.5;">'+
+      escapeHtml(a.address)+'<br>'+phoneLink+
+      '</div>'
+    );
+    markers.push(marker);
+  });
+
+  if(markers.length === 1){
+    mapInstance.setView([located[0].lat, located[0].lon], 13);
+  } else {
+    mapInstance.fitBounds(L.featureGroup(markers).getBounds().pad(0.15));
+  }
+}
+
 // ---- Dashboard tab ----
 function renderDashboardTab(){
   const year = state.dashboardYear;
@@ -1324,6 +1461,7 @@ function attachGlobalListeners(){
   const csvInput = document.getElementById('csv-input');
   if(csvInput) csvInput.onchange = (e) => { if(e.target.files[0]) handleCsvFile(e.target.files[0]); e.target.value=''; };
   setupDragReorder();
+  if(state.tab === 'map' && document.getElementById('agency-map')) initMapView();
 }
 
 function onGlobalChange(e){
@@ -1413,6 +1551,7 @@ function onGlobalClick(e){
   else if(action === 'pick-csv'){ document.getElementById('csv-input').click(); }
   else if(action === 'new-agency'){ openAgencyModal(null); }
   else if(action === 'set-agency-scope'){ state.agencyViewScope = btn.dataset.scope; render(); }
+  else if(action === 'set-map-scope'){ state.mapViewScope = btn.dataset.scope; render(); }
   else if(action === 'edit-agency'){ openAgencyModal(id); }
   else if(action === 'delete-agency'){
     showConfirmModal('Delete this agency? Its visit history will also be removed.', function(){
