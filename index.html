@@ -299,6 +299,8 @@ const state = {
   currentRepId: null,
   agencyViewScope: 'mine', // 'mine' | 'all'
   mapViewScope: 'mine', // 'mine' | 'all'
+  mapBuildMode: false,
+  mapSelectedIds: [],
   repGateStep: 'pick', // 'pick' | 'pin' | 'new'
   repGateSelectedId: null,
   settings: { staleDays: 30 },
@@ -725,6 +727,145 @@ async function estimateDriveTimes(routeId){
   render();
 }
 
+// ---------- route order optimization ----------
+// Builds a full travel-time matrix in as few requests as possible, then
+// reorders stops to minimize total drive time — any stop with a scheduled
+// time is treated as a fixed checkpoint the route must hit in that order;
+// stops without a time get slotted in wherever adds the least extra driving.
+async function getDurationMatrixOSRM(agencies){
+  const coords = agencies.map(a => a.lon+','+a.lat).join(';');
+  const url = 'https://router.project-osrm.org/table/v1/driving/'+coords+'?annotations=duration';
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('matrix request failed');
+  const data = await res.json();
+  if(!data.durations) throw new Error('no matrix in response');
+  return data.durations.map(row => row.map(sec => sec==null ? Infinity : sec/60));
+}
+
+async function getDurationMatrixGoogle(agencies, apiKey){
+  await loadGoogleMaps(apiKey);
+  const service = new google.maps.DistanceMatrixService();
+  const addresses = agencies.map(a => a.address);
+  const result = await new Promise((resolve, reject) => {
+    service.getDistanceMatrix({
+      origins: addresses, destinations: addresses,
+      travelMode: google.maps.TravelMode.DRIVING,
+      drivingOptions:{ departureTime: new Date(), trafficModel:'bestguess' }
+    }, (res, status) => status === 'OK' ? resolve(res) : reject(new Error(status)));
+  });
+  return result.rows.map(row => row.elements.map(el => el.status==='OK' ? el.duration.value/60 : Infinity));
+}
+
+function routeLength(order, matrix){
+  let total = 0;
+  for(let i=0;i<order.length-1;i++) total += matrix[order[i]][order[i+1]];
+  return total;
+}
+
+// Nearest-neighbor construction, then 2-opt local search — a standard,
+// well-understood approach to this kind of ordering problem.
+function nearestNeighborOrder(startIdx, indices, matrix){
+  const remaining = new Set(indices);
+  remaining.delete(startIdx);
+  const order = [startIdx];
+  let current = startIdx;
+  while(remaining.size){
+    let best = null, bestDist = Infinity;
+    remaining.forEach(idx => {
+      const d = matrix[current][idx];
+      if(d < bestDist){ bestDist = d; best = idx; }
+    });
+    order.push(best);
+    remaining.delete(best);
+    current = best;
+  }
+  return order;
+}
+function twoOptImprove(order, matrix){
+  let improved = true;
+  let guard = 0;
+  while(improved && guard < 200){
+    improved = false;
+    guard++;
+    for(let i=1; i<order.length-2; i++){
+      for(let j=i+1; j<order.length-1; j++){
+        const a=order[i-1], b=order[i], c=order[j], d=order[j+1];
+        const before = matrix[a][b] + matrix[c][d];
+        const after = matrix[a][c] + matrix[b][d];
+        if(after + 0.01 < before){
+          const seg = order.slice(i, j+1).reverse();
+          order = order.slice(0,i).concat(seg, order.slice(j+1));
+          improved = true;
+        }
+      }
+    }
+  }
+  return order;
+}
+
+// Cheapest-insertion: slot each unscheduled stop into whichever gap in the
+// fixed (time-anchored) sequence adds the least extra driving time.
+function cheapestInsertionOrder(fixedIndices, freeIndices, matrix){
+  let order = fixedIndices.slice();
+  freeIndices.forEach(idx => {
+    let bestPos = 0, bestExtra = Infinity;
+    for(let pos=0; pos<=order.length; pos++){
+      const prev = pos>0 ? order[pos-1] : null;
+      const next = pos<order.length ? order[pos] : null;
+      let extra;
+      if(prev==null) extra = matrix[idx][next];
+      else if(next==null) extra = matrix[prev][idx];
+      else extra = matrix[prev][idx] + matrix[idx][next] - matrix[prev][next];
+      if(extra < bestExtra){ bestExtra = extra; bestPos = pos; }
+    }
+    order.splice(bestPos, 0, idx);
+  });
+  return order;
+}
+
+async function optimizeRouteOrder(routeId){
+  const r = state.routes.find(x=>x.id===routeId);
+  if(!r || r.stops.length < 3){ showToast('Add at least 3 stops to optimize an order'); return; }
+  state.driveTimeCache[routeId] = { computing:true, segments:[], error:false };
+  render();
+
+  const agencies = r.stops.map(s => agencyById(s.agencyId)).filter(Boolean);
+  const googleKey = state.settings.googleMapsApiKey;
+  let matrix;
+  try{
+    if(googleKey){
+      matrix = await getDurationMatrixGoogle(agencies, googleKey);
+    } else {
+      const missing = agencies.filter(a => a.lat==null || a.lon==null);
+      for(let i=0;i<missing.length;i++){ await ensureGeocoded(missing[i]); await sleep(1100); }
+      saveAgencies();
+      if(agencies.some(a=>a.lat==null||a.lon==null)) throw new Error('some stops could not be located');
+      matrix = await getDurationMatrixOSRM(agencies);
+    }
+  }catch(e){
+    state.driveTimeCache[routeId] = { computing:false, segments:[], error:true, failedNames: agencies.filter(a=>a.lat==null||a.lon==null).map(a=>a.name) };
+    render();
+    showToast('Couldn\u2019t optimize — could not build a travel-time matrix for these stops');
+    return;
+  }
+
+  const indices = agencies.map((a,i)=>i);
+  const timed = r.stops.map((s,i)=>({i, time:s.time})).filter(x=>x.time);
+  let orderIdx;
+  if(timed.length >= 1){
+    const fixedIdx = timed.sort((a,b)=>a.time.localeCompare(b.time)).map(x=>x.i);
+    const freeIdx = indices.filter(i => !fixedIdx.includes(i));
+    orderIdx = cheapestInsertionOrder(fixedIdx, freeIdx, matrix);
+  } else {
+    orderIdx = twoOptImprove(nearestNeighborOrder(0, indices, matrix), matrix);
+  }
+
+  r.stops = orderIdx.map(i => r.stops[i]);
+  saveRoutes();
+  showToast('Route order optimized');
+  await estimateDriveTimes(routeId); // refresh leg-by-leg times to match the new order
+}
+
 // ---------- rendering ----------
 function render(){
   const app = document.getElementById('app');
@@ -1045,7 +1186,10 @@ function renderRouteEditor(){
   html += '<div style="flex:1;min-width:280px;">'+
     '<div class="row-between" style="margin:18px 0 8px;">'+
       '<div class="section-label" style="margin:0;">Stops in order ('+r.stops.length+')</div>'+
-      (r.stops.length > 1 ? '<button class="ghost sm" data-action="estimate-drive" data-id="'+r.id+'" '+(dt&&dt.computing?'disabled':'')+'>'+(dt&&dt.computing?'Estimating…':'Estimate drive times')+'</button>' : '')+
+      '<div class="row" style="gap:6px;">'+
+        (r.stops.length > 2 ? '<button class="primary sm" data-action="optimize-route" data-id="'+r.id+'" '+(dt&&dt.computing?'disabled':'')+'>'+(dt&&dt.computing?'Optimizing…':'Optimize order')+'</button>' : '')+
+        (r.stops.length > 1 ? '<button class="ghost sm" data-action="estimate-drive" data-id="'+r.id+'" '+(dt&&dt.computing?'disabled':'')+'>'+(dt&&dt.computing?'Estimating…':'Estimate drive times')+'</button>' : '')+
+      '</div>'+
     '</div>';
   if(r.stops.length === 0){
     html += '<div class="empty">Select agencies from the list on the right to add stops.</div>';
@@ -1073,6 +1217,9 @@ function renderRouteEditor(){
     html += '</ul>';
     if(dt && dt.error){
       html += '<div class="addr" style="margin-top:6px;">'+driveErrorMessage(dt)+'</div>';
+    }
+    if(r.stops.length > 2){
+      html += '<div class="addr" style="margin-top:8px;">"Optimize order" reorders stops to cut total driving time, using real road data — any stop with a scheduled time is kept as a fixed checkpoint and the rest are slotted around it.</div>';
     }
   }
   html += '</div>';
@@ -1189,12 +1336,18 @@ function renderSettingsTab(){
 function renderMapTab(){
   const scope = state.mapViewScope;
   const list = (scope === 'all' ? state.agencies : myAgencies()).filter(a => a.address);
+  const building = state.mapBuildMode;
 
   let html = '<div class="row-between" style="margin-bottom:14px;">'+
-    '<div class="addr">Hover a pin for the name, or click it for the full card.</div>'+
-    '<div class="scope-toggle">'+
-      '<button class="'+(scope==='mine'?'active':'')+'" data-action="set-map-scope" data-scope="mine">My agencies</button>'+
-      '<button class="'+(scope==='all'?'active':'')+'" data-action="set-map-scope" data-scope="all">All agencies</button>'+
+    '<div class="addr">'+(building ? 'Tap pins to add them to your new route.' : 'Hover a pin for the name, or click it for the full card.')+'</div>'+
+    '<div class="row">'+
+      '<div class="scope-toggle">'+
+        '<button class="'+(scope==='mine'?'active':'')+'" data-action="set-map-scope" data-scope="mine">My agencies</button>'+
+        '<button class="'+(scope==='all'?'active':'')+'" data-action="set-map-scope" data-scope="all">All agencies</button>'+
+      '</div>'+
+      (building
+        ? '<button class="ghost" data-action="cancel-map-build">Cancel</button>'
+        : '<button class="primary" data-action="toggle-map-build">Build a route</button>')+
     '</div>'+
   '</div>';
 
@@ -1203,13 +1356,68 @@ function renderMapTab(){
     return html;
   }
 
+  if(building){
+    html += '<div id="route-builder-panel" class="card" style="margin-bottom:14px;padding:14px 16px;"></div>';
+  }
+
   html += '<div id="map-status" class="addr" style="margin-bottom:8px;"></div>'+
     '<div id="agency-map" class="map-box"></div>'+
     '<div class="row" style="margin-top:10px;gap:16px;">'+
       '<span class="addr"><span class="dot visited-in-person" style="display:inline-block;"></span> visited in '+state.dashboardYear+'</span>'+
       '<span class="addr"><span class="dot pending" style="display:inline-block;"></span> not yet visited</span>'+
+      (building ? '<span class="addr"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;border:2.5px solid var(--route);"></span> selected</span>' : '')+
     '</div>';
   return html;
+}
+
+function updateRouteBuilderPanel(){
+  const panel = document.getElementById('route-builder-panel');
+  if(!panel) return;
+  const ids = state.mapSelectedIds;
+  const items = ids.map(id => agencyById(id)).filter(Boolean);
+  panel.innerHTML = '<div class="row-between" style="margin-bottom:'+(items.length?'8px':'0')+';">'+
+      '<div style="font-family:\'Space Grotesk\',sans-serif;font-weight:600;font-size:14px;">'+items.length+' stop'+(items.length===1?'':'s')+' selected</div>'+
+      '<button class="primary sm" id="save-map-route-btn" '+(items.length===0?'disabled':'')+'>Save as route</button>'+
+    '</div>'+
+    (items.length ? '<ul class="stop-list" style="margin:0;">'+
+      items.map((a,i) => '<li class="stop-item" style="padding:6px 0;"><span class="stop-num">'+(i+1)+'.</span><div class="stop-body"><div class="stop-name">'+escapeHtml(a.name)+'</div></div><button class="ghost sm" data-remove-id="'+a.id+'">Remove</button></li>').join('')+
+    '</ul>' : '<div class="addr">Tap pins on the map to add stops here, in the order you\u2019d like to visit them.</div>');
+
+  panel.querySelectorAll('[data-remove-id]').forEach(btn => {
+    btn.addEventListener('click', () => toggleMapSelection(btn.dataset.removeId));
+  });
+  const saveBtn = document.getElementById('save-map-route-btn');
+  if(saveBtn) saveBtn.addEventListener('click', openSaveMapRouteModal);
+}
+
+function toggleMapSelection(agencyId){
+  const idx = state.mapSelectedIds.indexOf(agencyId);
+  if(idx === -1) state.mapSelectedIds.push(agencyId);
+  else state.mapSelectedIds.splice(idx, 1);
+  const marker = markersByAgencyId[agencyId];
+  if(marker) applyMarkerSelectionStyle(marker, agencyId);
+  updateRouteBuilderPanel();
+}
+
+function applyMarkerSelectionStyle(marker, agencyId){
+  const selected = state.mapSelectedIds.includes(agencyId);
+  marker.setStyle({ weight: selected ? 4 : 1.5, color: selected ? '#7A4FE0' : '#17242E' });
+}
+
+function openSaveMapRouteModal(){
+  const root = document.getElementById('modal-root');
+  root.innerHTML = '<div class="modal-backdrop">'+
+    '<div class="modal">'+
+      '<h3>Save as route</h3>'+
+      '<div class="field"><label>Route name</label><input type="text" id="map-route-name" value="New route" style="width:100%;"></div>'+
+      '<div class="field"><label>Day of week</label><select id="map-route-day" style="width:100%;">'+WEEKDAYS.map(d=>'<option value="'+d+'">'+d+'</option>').join('')+'</select></div>'+
+      '<div class="addr">Stops are saved in the order you tapped them — you can reorder, set times, and optimize once the route opens.</div>'+
+      '<div class="modal-actions">'+
+        '<button data-action="close-modal">Cancel</button>'+
+        '<button class="primary" data-action="save-map-route">Save and open route</button>'+
+      '</div>'+
+    '</div>'+
+  '</div>';
 }
 
 // Leaflet + OpenStreetMap — free, no API key. Loaded lazily so the library
@@ -1234,6 +1442,7 @@ function loadLeaflet(){
 
 let mapInstance = null;
 let mapViewLoading = false;
+let markersByAgencyId = {};
 async function initMapView(){
   if(mapViewLoading) return;
   mapViewLoading = true;
@@ -1289,11 +1498,13 @@ async function initMapViewInner(){
   }).addTo(mapInstance);
 
   const markers = [];
+  markersByAgencyId = {};
   located.forEach(a => {
     const visited = visitsForAgencyYear(a.id, state.dashboardYear).length > 0;
     const color = visited ? '#C98A1B' : '#B23B3B';
+    const selected = state.mapBuildMode && state.mapSelectedIds.includes(a.id);
     const marker = L.circleMarker([a.lat, a.lon], {
-      radius: 9, color:'#17242E', weight:1.5, fillColor: color, fillOpacity: 0.9
+      radius: 9, color: selected ? '#7A4FE0' : '#17242E', weight: selected ? 4 : 1.5, fillColor: color, fillOpacity: 0.9
     }).addTo(mapInstance);
     marker.bindTooltip(escapeHtml(a.name), { direction:'top', offset:[0,-6] });
     const phoneLink = a.phone ? '<a href="tel:'+escapeHtml(a.phone.replace(/[^\d+]/g,''))+'">'+escapeHtml(a.phone)+'</a>' : '—';
@@ -1303,6 +1514,8 @@ async function initMapViewInner(){
       escapeHtml(a.address)+'<br>'+phoneLink+
       '</div>'
     );
+    marker.on('click', () => { if(state.mapBuildMode) toggleMapSelection(a.id); });
+    markersByAgencyId[a.id] = marker;
     markers.push(marker);
   });
 
@@ -1311,6 +1524,7 @@ async function initMapViewInner(){
   } else {
     mapInstance.fitBounds(L.featureGroup(markers).getBounds().pad(0.15));
   }
+  if(state.mapBuildMode) updateRouteBuilderPanel();
 }
 
 // ---- Dashboard tab ----
@@ -1552,6 +1766,25 @@ function onGlobalClick(e){
   else if(action === 'new-agency'){ openAgencyModal(null); }
   else if(action === 'set-agency-scope'){ state.agencyViewScope = btn.dataset.scope; render(); }
   else if(action === 'set-map-scope'){ state.mapViewScope = btn.dataset.scope; render(); }
+  else if(action === 'toggle-map-build'){ state.mapBuildMode = true; state.mapSelectedIds = []; render(); }
+  else if(action === 'cancel-map-build'){ state.mapBuildMode = false; state.mapSelectedIds = []; render(); }
+  else if(action === 'save-map-route'){
+    const name = document.getElementById('map-route-name').value.trim() || 'New route';
+    const day = document.getElementById('map-route-day').value;
+    const newRoute = {
+      id: uid(), name, day, date:'', ownerId: state.currentRepId,
+      stops: state.mapSelectedIds.map(aid => ({ agencyId: aid, time:'' }))
+    };
+    state.routes.push(newRoute);
+    saveRoutes();
+    state.mapBuildMode = false;
+    state.mapSelectedIds = [];
+    state.tab = 'routes';
+    state.editingRouteId = newRoute.id;
+    document.getElementById('modal-root').innerHTML = '';
+    render();
+    showToast('Route saved — set times or optimize the order below');
+  }
   else if(action === 'edit-agency'){ openAgencyModal(id); }
   else if(action === 'delete-agency'){
     showConfirmModal('Delete this agency? Its visit history will also be removed.', function(){
@@ -1677,6 +1910,7 @@ function onGlobalClick(e){
     if(i<r.stops.length-1){ [r.stops[i+1],r.stops[i]]=[r.stops[i],r.stops[i+1]]; delete state.driveTimeCache[r.id]; saveRoutes(); render(); }
   }
   else if(action === 'estimate-drive'){ estimateDriveTimes(id); }
+  else if(action === 'optimize-route'){ optimizeRouteOrder(id); }
   else if(action === 'toggle-stale-banner'){ state.staleBannerOpen = !state.staleBannerOpen; render(); }
   else if(action === 'save-stale-days'){
     const val = parseInt(document.getElementById('stale-days-input').value, 10);
