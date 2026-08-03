@@ -301,6 +301,7 @@ const state = {
   mapViewScope: 'mine', // 'mine' | 'all'
   mapBuildMode: false,
   mapSelectedIds: [],
+  mapProvider: 'leaflet', // 'leaflet' | 'google' — set at render time based on whether a Google Maps key is configured
   repGateStep: 'pick', // 'pick' | 'pin' | 'new'
   repGateSelectedId: null,
   settings: { staleDays: 30 },
@@ -1337,8 +1338,8 @@ function renderSettingsTab(){
   '</div>';
 
   html += '<div class="card">'+
-    '<h3 style="font-size:14px;margin-bottom:8px;">Optional: use Google Maps for estimates</h3>'+
-    '<div class="addr" style="line-height:1.6;margin-bottom:10px;">For live-traffic-aware driving times, add your own Google Maps API key. This requires a free Google Cloud account with the Maps JavaScript API and Distance Matrix API enabled — Google requires a credit card on file to activate billing, but personal use at this scale stays well within their monthly free credit. Restrict the key to your app\u2019s web address (HTTP referrer restriction) so it can\u2019t be used elsewhere if seen. Leave this blank to keep using the free option above.</div>'+
+    '<h3 style="font-size:14px;margin-bottom:8px;">Optional: use Google Maps for estimates &amp; the map view</h3>'+
+    '<div class="addr" style="line-height:1.6;margin-bottom:10px;">Add your own Google Maps API key for live-traffic-aware driving times, and the Map tab will automatically switch to real Google Maps tiles and roads instead of the free map. This requires a free Google Cloud account with the Maps JavaScript API and Distance Matrix API enabled — Google requires a credit card on file to activate billing, but personal use at this scale stays well within their monthly free credit. Restrict the key to your app\u2019s web address (HTTP referrer restriction) so it can\u2019t be used elsewhere if seen. Leave this blank to keep using the free options above.</div>'+
     '<div class="field" style="max-width:420px;"><label>Google Maps API key</label>'+
       '<input type="text" id="google-key-input" style="width:100%;" placeholder="AIza..." value="'+escapeHtml(state.settings.googleMapsApiKey||'')+'"></div>'+
     '<button class="primary" style="margin-top:10px;" data-action="save-google-key">Save</button>'+
@@ -1404,6 +1405,43 @@ function updateRouteBuilderPanel(){
   if(saveBtn) saveBtn.addEventListener('click', openSaveMapRouteModal);
 }
 
+// Resolves which agencies are mappable, geocoding any that are missing
+// coordinates, and updates the status line. Shared by both map backends.
+async function resolveMapAgencies(statusEl){
+  const scope = state.mapViewScope;
+  const list = (scope === 'all' ? state.agencies : myAgencies()).filter(a => a.address);
+  const missing = list.filter(a => a.lat == null && a.lon == null && !a.geocodeFailed);
+
+  if(missing.length){
+    for(let i=0; i<missing.length; i++){
+      if(!document.getElementById('agency-map')) return null; // left the tab mid-geocode
+      if(statusEl) statusEl.textContent = 'Locating agencies… ('+(i+1)+' of '+missing.length+')';
+      await ensureGeocoded(missing[i]);
+      await sleep(1100); // respect Nominatim's ~1 request/second usage policy
+    }
+    saveAgencies();
+  }
+  if(!document.getElementById('agency-map')) return null;
+
+  const located = list.filter(a => a.lat != null && a.lon != null);
+  const unlocated = list.filter(a => a.lat == null || a.lon == null);
+  if(statusEl){
+    statusEl.innerHTML = unlocated.length
+      ? 'Couldn\u2019t place on the map: '+unlocated.map(a=>escapeHtml(a.name)).join(', ')+
+        '. Try a more complete address, or add coordinates manually on that agency\u2019s edit form. '+
+        '<button class="ghost sm" data-action="retry-map-geocode" style="margin-left:6px;">Retry</button>'
+      : '';
+  }
+  return located;
+}
+
+function markerPopupHtml(a){
+  const phoneLink = a.phone ? '<a href="tel:'+escapeHtml(a.phone.replace(/[^\d+]/g,''))+'">'+escapeHtml(a.phone)+'</a>' : '—';
+  return '<div style="font-family:\'Space Grotesk\',sans-serif;font-weight:600;font-size:13.5px;margin-bottom:2px;">'+escapeHtml(a.name)+'</div>'+
+    '<div style="font-family:\'Public Sans\',sans-serif;font-size:12.5px;color:#3E4C55;line-height:1.5;">'+
+    escapeHtml(a.address)+'<br>'+phoneLink+'</div>';
+}
+
 function toggleMapSelection(agencyId){
   const idx = state.mapSelectedIds.indexOf(agencyId);
   if(idx === -1) state.mapSelectedIds.push(agencyId);
@@ -1415,7 +1453,14 @@ function toggleMapSelection(agencyId){
 
 function applyMarkerSelectionStyle(marker, agencyId){
   const selected = state.mapSelectedIds.includes(agencyId);
-  marker.setStyle({ weight: selected ? 4 : 1.5, color: selected ? '#7A4FE0' : '#17242E' });
+  if(state.mapProvider === 'google'){
+    const icon = marker.getIcon();
+    icon.strokeColor = selected ? '#7A4FE0' : '#17242E';
+    icon.strokeWeight = selected ? 4 : 1.5;
+    marker.setIcon(icon);
+  } else {
+    marker.setStyle({ weight: selected ? 4 : 1.5, color: selected ? '#7A4FE0' : '#17242E' });
+  }
 }
 
 function openSaveMapRouteModal(){
@@ -1434,8 +1479,9 @@ function openSaveMapRouteModal(){
   '</div>';
 }
 
-// Leaflet + OpenStreetMap — free, no API key. Loaded lazily so the library
-// only downloads for people who actually open the Map tab.
+// Leaflet + OpenStreetMap — free, no API key. Used automatically unless a
+// Google Maps API key is configured in Settings. Loaded lazily so the
+// library only downloads for people who actually open the Map tab.
 let leafletLoading = null;
 function loadLeaflet(){
   if(window.L) return Promise.resolve();
@@ -1461,12 +1507,24 @@ async function initMapView(){
   if(mapViewLoading) return;
   mapViewLoading = true;
   try{
-    await initMapViewInner();
+    const googleKey = state.settings.googleMapsApiKey;
+    if(googleKey){
+      try{
+        await initMapViewGoogle(googleKey);
+      }catch(e){
+        const statusEl = document.getElementById('map-status');
+        if(statusEl) statusEl.textContent = 'Google Maps couldn\u2019t load (check the API key and that billing/Maps JavaScript API are enabled) — showing the free map instead.';
+        await initMapViewLeaflet();
+      }
+    } else {
+      await initMapViewLeaflet();
+    }
   } finally {
     mapViewLoading = false;
   }
 }
-async function initMapViewInner(){
+
+async function initMapViewLeaflet(){
   const statusEl = document.getElementById('map-status');
   const mapEl = document.getElementById('agency-map');
   if(!mapEl) return; // user navigated away before this resolved
@@ -1479,32 +1537,11 @@ async function initMapViewInner(){
     return;
   }
 
-  const scope = state.mapViewScope;
-  const list = (scope === 'all' ? state.agencies : myAgencies()).filter(a => a.address);
-  const missing = list.filter(a => a.lat == null && a.lon == null && !a.geocodeFailed);
-
-  if(missing.length){
-    for(let i=0; i<missing.length; i++){
-      if(!document.getElementById('agency-map')) return; // left the tab mid-geocode
-      if(statusEl) statusEl.textContent = 'Locating agencies… ('+(i+1)+' of '+missing.length+')';
-      await ensureGeocoded(missing[i]);
-      await sleep(1100); // respect Nominatim's ~1 request/second usage policy
-    }
-    saveAgencies();
-  }
-  if(!document.getElementById('agency-map')) return;
-
-  const located = list.filter(a => a.lat != null && a.lon != null);
-  const unlocated = list.filter(a => a.lat == null || a.lon == null);
-  if(statusEl){
-    statusEl.innerHTML = unlocated.length
-      ? 'Couldn\u2019t place on the map: '+unlocated.map(a=>escapeHtml(a.name)).join(', ')+
-        '. Try a more complete address, or add coordinates manually on that agency\u2019s edit form. '+
-        '<button class="ghost sm" data-action="retry-map-geocode" style="margin-left:6px;">Retry</button>'
-      : '';
-  }
+  const located = await resolveMapAgencies(statusEl);
+  if(located === null) return;
 
   try{ if(mapInstance){ mapInstance.remove(); mapInstance = null; } }catch(e){}
+  state.mapProvider = 'leaflet';
   if(located.length === 0) return;
 
   mapInstance = L.map('agency-map');
@@ -1523,13 +1560,7 @@ async function initMapViewInner(){
       radius: 9, color: selected ? '#7A4FE0' : '#17242E', weight: selected ? 4 : 1.5, fillColor: color, fillOpacity: 0.9
     }).addTo(mapInstance);
     marker.bindTooltip(escapeHtml(a.name), { direction:'top', offset:[0,-6] });
-    const phoneLink = a.phone ? '<a href="tel:'+escapeHtml(a.phone.replace(/[^\d+]/g,''))+'">'+escapeHtml(a.phone)+'</a>' : '—';
-    marker.bindPopup(
-      '<div style="font-family:\'Space Grotesk\',sans-serif;font-weight:600;font-size:13.5px;margin-bottom:2px;">'+escapeHtml(a.name)+'</div>'+
-      '<div style="font-family:\'Public Sans\',sans-serif;font-size:12.5px;color:#3E4C55;line-height:1.5;">'+
-      escapeHtml(a.address)+'<br>'+phoneLink+
-      '</div>'
-    );
+    marker.bindPopup(markerPopupHtml(a));
     marker.on('click', () => { if(state.mapBuildMode) toggleMapSelection(a.id); });
     markersByAgencyId[a.id] = marker;
     markers.push(marker);
@@ -1539,6 +1570,64 @@ async function initMapViewInner(){
     mapInstance.setView([located[0].lat, located[0].lon], 13);
   } else {
     mapInstance.fitBounds(L.featureGroup(markers).getBounds().pad(0.15));
+  }
+  if(state.mapBuildMode) updateRouteBuilderPanel();
+}
+
+// Google Maps — used automatically when a Google Maps API key is configured
+// in Settings, for the real Google map look, roads, and labels.
+let googleMapInstance = null;
+let googleInfoWindow = null;
+async function initMapViewGoogle(apiKey){
+  const statusEl = document.getElementById('map-status');
+  const mapEl = document.getElementById('agency-map');
+  if(!mapEl) return;
+
+  if(statusEl) statusEl.textContent = 'Loading map…';
+  await loadGoogleMaps(apiKey);
+  if(!window.google || !google.maps || !google.maps.Map) throw new Error('Google Maps script did not initialize');
+
+  const located = await resolveMapAgencies(statusEl);
+  if(located === null) return;
+
+  state.mapProvider = 'google';
+  googleMapInstance = new google.maps.Map(mapEl, {
+    mapTypeControl:false, streetViewControl:false, fullscreenControl:false
+  });
+  googleInfoWindow = new google.maps.InfoWindow();
+  if(located.length === 0) return;
+
+  const bounds = new google.maps.LatLngBounds();
+  markersByAgencyId = {};
+  located.forEach(a => {
+    const visited = visitsForAgencyYear(a.id, state.dashboardYear).length > 0;
+    const color = visited ? '#C98A1B' : '#B23B3B';
+    const selected = state.mapBuildMode && state.mapSelectedIds.includes(a.id);
+    const marker = new google.maps.Marker({
+      position: { lat:a.lat, lng:a.lon },
+      map: googleMapInstance,
+      title: a.name,
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        fillColor: color, fillOpacity: 0.9,
+        strokeColor: selected ? '#7A4FE0' : '#17242E', strokeWeight: selected ? 4 : 1.5,
+        scale: 9
+      }
+    });
+    marker.addListener('click', () => {
+      if(state.mapBuildMode) toggleMapSelection(a.id);
+      googleInfoWindow.setContent(markerPopupHtml(a));
+      googleInfoWindow.open(googleMapInstance, marker);
+    });
+    markersByAgencyId[a.id] = marker;
+    bounds.extend(marker.getPosition());
+  });
+
+  if(located.length === 1){
+    googleMapInstance.setCenter(bounds.getCenter());
+    googleMapInstance.setZoom(13);
+  } else {
+    googleMapInstance.fitBounds(bounds, 48);
   }
   if(state.mapBuildMode) updateRouteBuilderPanel();
 }
