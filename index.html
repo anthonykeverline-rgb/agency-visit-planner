@@ -1442,6 +1442,26 @@ function markerPopupHtml(a){
     escapeHtml(a.address)+'<br>'+phoneLink+'</div>';
 }
 
+// Shared 24x24 five-point star path, used by both map backends so pin
+// shape/color customization looks consistent regardless of which renders.
+const STAR_PATH_24 = 'M12 2 L14.9 9.1 L22.5 9.1 L16.3 13.6 L18.5 21 L12 16.5 L5.5 21 L7.7 13.6 L1.5 9.1 L9.1 9.1 Z';
+
+function markerColorFor(agency){
+  if(agency.markerColor) return agency.markerColor;
+  const visited = visitsForAgencyYear(agency.id, state.dashboardYear).length > 0;
+  return visited ? '#C98A1B' : '#B23B3B';
+}
+
+function leafletMarkerIcon(shape, color, selected){
+  const stroke = selected ? '#7A4FE0' : '#17242E';
+  const weight = selected ? 3 : 1.5;
+  const inner = shape === 'star'
+    ? '<path d="'+STAR_PATH_24+'" fill="'+color+'" stroke="'+stroke+'" stroke-width="'+weight+'" stroke-linejoin="round"/>'
+    : '<circle cx="12" cy="12" r="9" fill="'+color+'" stroke="'+stroke+'" stroke-width="'+weight+'"/>';
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24">'+inner+'</svg>';
+  return L.divIcon({ html: svg, className:'', iconSize:[26,26], iconAnchor:[13,13] });
+}
+
 function toggleMapSelection(agencyId){
   const idx = state.mapSelectedIds.indexOf(agencyId);
   if(idx === -1) state.mapSelectedIds.push(agencyId);
@@ -1453,13 +1473,16 @@ function toggleMapSelection(agencyId){
 
 function applyMarkerSelectionStyle(marker, agencyId){
   const selected = state.mapSelectedIds.includes(agencyId);
+  const a = agencyById(agencyId);
+  if(!a) return;
+  const color = markerColorFor(a);
   if(state.mapProvider === 'google'){
     const icon = marker.getIcon();
     icon.strokeColor = selected ? '#7A4FE0' : '#17242E';
     icon.strokeWeight = selected ? 4 : 1.5;
     marker.setIcon(icon);
   } else {
-    marker.setStyle({ weight: selected ? 4 : 1.5, color: selected ? '#7A4FE0' : '#17242E' });
+    marker.setIcon(leafletMarkerIcon(a.markerShape || 'circle', color, selected));
   }
 }
 
@@ -1553,13 +1576,12 @@ async function initMapViewLeaflet(){
   const markers = [];
   markersByAgencyId = {};
   located.forEach(a => {
-    const visited = visitsForAgencyYear(a.id, state.dashboardYear).length > 0;
-    const color = visited ? '#C98A1B' : '#B23B3B';
+    const color = markerColorFor(a);
     const selected = state.mapBuildMode && state.mapSelectedIds.includes(a.id);
-    const marker = L.circleMarker([a.lat, a.lon], {
-      radius: 9, color: selected ? '#7A4FE0' : '#17242E', weight: selected ? 4 : 1.5, fillColor: color, fillOpacity: 0.9
+    const marker = L.marker([a.lat, a.lon], {
+      icon: leafletMarkerIcon(a.markerShape || 'circle', color, selected)
     }).addTo(mapInstance);
-    marker.bindTooltip(escapeHtml(a.name), { direction:'top', offset:[0,-6] });
+    marker.bindTooltip(escapeHtml(a.name), { direction:'top', offset:[0,-8] });
     marker.bindPopup(markerPopupHtml(a));
     marker.on('click', () => { if(state.mapBuildMode) toggleMapSelection(a.id); });
     markersByAgencyId[a.id] = marker;
@@ -1600,19 +1622,27 @@ async function initMapViewGoogle(apiKey){
   const bounds = new google.maps.LatLngBounds();
   markersByAgencyId = {};
   located.forEach(a => {
-    const visited = visitsForAgencyYear(a.id, state.dashboardYear).length > 0;
-    const color = visited ? '#C98A1B' : '#B23B3B';
+    const color = markerColorFor(a);
     const selected = state.mapBuildMode && state.mapSelectedIds.includes(a.id);
+    const shape = a.markerShape || 'circle';
+    const icon = shape === 'star'
+      ? {
+          path: STAR_PATH_24,
+          fillColor: color, fillOpacity: 0.9,
+          strokeColor: selected ? '#7A4FE0' : '#17242E', strokeWeight: selected ? 4 : 1.5,
+          scale: 1, anchor: new google.maps.Point(12,12)
+        }
+      : {
+          path: google.maps.SymbolPath.CIRCLE,
+          fillColor: color, fillOpacity: 0.9,
+          strokeColor: selected ? '#7A4FE0' : '#17242E', strokeWeight: selected ? 4 : 1.5,
+          scale: 9
+        };
     const marker = new google.maps.Marker({
       position: { lat:a.lat, lng:a.lon },
       map: googleMapInstance,
       title: a.name,
-      icon: {
-        path: google.maps.SymbolPath.CIRCLE,
-        fillColor: color, fillOpacity: 0.9,
-        strokeColor: selected ? '#7A4FE0' : '#17242E', strokeWeight: selected ? 4 : 1.5,
-        scale: 9
-      }
+      icon: icon
     });
     marker.addListener('click', () => {
       if(state.mapBuildMode) toggleMapSelection(a.id);
@@ -1712,6 +1742,18 @@ function openAgencyModal(agencyId){
       '<div class="row">'+
         '<div class="field" style="flex:1;"><label>Latitude</label><input type="text" id="f-lat" value="'+(editing&&editing.lat!=null?editing.lat:'')+'" placeholder="e.g. 29.7604"></div>'+
         '<div class="field" style="flex:1;"><label>Longitude</label><input type="text" id="f-lon" value="'+(editing&&editing.lon!=null?editing.lon:'')+'" placeholder="e.g. -95.3698"></div>'+
+      '</div>'+
+      '<div class="section-label">Map pin</div>'+
+      '<div class="addr" style="margin-bottom:8px;">By default, pins are colored automatically — amber if visited this year, red if not. Override that here if you want to flag this agency specially (e.g. a star for VIP accounts).</div>'+
+      '<div class="row">'+
+        '<div class="field"><label>Shape</label><select id="f-marker-shape">'+
+          '<option value="circle"'+(editing&&editing.markerShape==='star'?'':' selected')+'>Circle</option>'+
+          '<option value="star"'+(editing&&editing.markerShape==='star'?' selected':'')+'>Star</option>'+
+        '</select></div>'+
+        '<div class="field">'+
+          '<label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="f-use-custom-color" style="width:auto;" '+(editing&&editing.markerColor?'checked':'')+'> Custom color</label>'+
+          '<input type="color" id="f-marker-color" value="'+(editing&&editing.markerColor?editing.markerColor:'#7A4FE0')+'" style="height:36px;padding:2px;">'+
+        '</div>'+
       '</div>'+
       '<div class="modal-actions">'+
         '<button data-action="close-modal">Cancel</button>'+
@@ -1915,6 +1957,9 @@ function onGlobalClick(e){
     const phone = document.getElementById('f-phone').value.trim();
     const latRaw = document.getElementById('f-lat').value.trim();
     const lonRaw = document.getElementById('f-lon').value.trim();
+    const markerShape = document.getElementById('f-marker-shape').value;
+    const useCustomColor = document.getElementById('f-use-custom-color').checked;
+    const markerColor = useCustomColor ? document.getElementById('f-marker-color').value : null;
     if(!name || !address){ showToast('Name and address are required'); return; }
     const lat = latRaw ? parseFloat(latRaw) : null;
     const lon = lonRaw ? parseFloat(lonRaw) : null;
@@ -1922,11 +1967,13 @@ function onGlobalClick(e){
     if(id){
       const a = agencyById(id);
       const addressChanged = a.address !== address;
-      Object.assign(a, {name,address,principal,phone});
+      Object.assign(a, {name,address,principal,phone,markerShape});
+      if(markerColor) a.markerColor = markerColor; else delete a.markerColor;
       if(lat!=null && lon!=null){ a.lat = lat; a.lon = lon; delete a.geocodeFailed; }
       else if(addressChanged){ delete a.lat; delete a.lon; delete a.geocodeFailed; } // re-geocode next time — old coords no longer match
     } else {
-      const agency = {id:uid(), name, address, principal, phone, ownerId: state.currentRepId, createdAt:new Date().toISOString()};
+      const agency = {id:uid(), name, address, principal, phone, markerShape, ownerId: state.currentRepId, createdAt:new Date().toISOString()};
+      if(markerColor) agency.markerColor = markerColor;
       if(lat!=null && lon!=null){ agency.lat = lat; agency.lon = lon; }
       state.agencies.push(agency);
     }
