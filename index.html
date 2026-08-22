@@ -185,17 +185,27 @@
     text-transform:uppercase;color:var(--muted);letter-spacing:.04em;
   }
   .calendar-cell{
-    aspect-ratio:1/1;min-height:64px;border:1.5px solid var(--line);border-radius:8px;
-    background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;
-    padding:8px 4px 6px;cursor:pointer;gap:5px;
+    position:relative;min-height:92px;border:1.5px solid var(--line);border-radius:8px;
+    background:#fff;display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;
+    padding:8px 6px;cursor:pointer;gap:4px;overflow:hidden;text-align:left;
   }
   .calendar-cell:hover{border-color:var(--route);}
   .calendar-cell-muted{color:var(--muted);background:var(--paper);}
   .calendar-cell-today{border-color:var(--ink);border-width:2px;}
   .calendar-cell-selected{background:var(--route-soft);border-color:var(--route);border-width:2px;}
-  .calendar-daynum{font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:15px;}
-  .calendar-dots{display:flex;flex-wrap:wrap;gap:2px;justify-content:center;max-width:44px;}
-  .calendar-dot{width:6px;height:6px;border-radius:50%;display:inline-block;}
+  .calendar-daynum{font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:14px;}
+  .calendar-agency-preview{width:100%;}
+  .calendar-agency-line{
+    font-size:10.5px;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    color:var(--ink-soft);width:100%;
+  }
+  .calendar-agency-done{color:var(--muted);text-decoration:line-through;}
+  .calendar-agency-more{font-size:10px;color:var(--muted);font-family:'IBM Plex Mono',monospace;}
+  .calendar-mobile-count{
+    display:none;position:absolute;top:6px;right:6px;background:var(--route);color:#fff;
+    font-family:'IBM Plex Mono',monospace;font-size:9.5px;font-weight:600;border-radius:999px;
+    min-width:16px;height:16px;line-height:16px;text-align:center;padding:0 3px;
+  }
   .stop-list{list-style:none;margin:12px 0 0;padding:0;}
   .stop-item{
     display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line);
@@ -306,10 +316,11 @@
     .stop-item select,.stop-item button{order:2;}
     .drive-seg{padding-left:4px;}
     .map-box{height:380px;}
-    .calendar-cell{min-height:46px;padding:6px 2px 4px;}
+    .calendar-cell{min-height:44px;padding:6px;}
     .calendar-daynum{font-size:13px;}
     .calendar-month-label{font-size:15px;}
-    .calendar-dots{max-width:30px;}
+    .calendar-agency-preview{display:none;}
+    .calendar-mobile-count{display:inline-block;}
   }
 </style>
 </head>
@@ -1134,19 +1145,27 @@ function renderRoutesTab(){
       const dStr = toDateStr(date);
       const inMonth = date.getMonth() === month;
       const dayRoutes = routesByDate[dStr] || [];
-      const openCount = dayRoutes.filter(r=>!r.completed).length;
-      const doneCount = dayRoutes.filter(r=>r.completed).length;
-      html += '<button class="calendar-cell'+
+      const stopsPreview = [];
+      dayRoutes.forEach(r => {
+        r.stops.forEach(s => {
+          const a = agencyById(s.agencyId);
+          if(a) stopsPreview.push({ name:a.name, completed: !!r.completed });
+        });
+      });
+      const shown = stopsPreview.slice(0,3);
+      const extra = stopsPreview.length - shown.length;
+      html += '<div class="calendar-cell'+
           (inMonth?'':' calendar-cell-muted')+
           (dStr===selectedStr?' calendar-cell-selected':'')+
           (dStr===todayStr?' calendar-cell-today':'')+
         '" data-action="select-calendar-date" data-date="'+dStr+'">'+
         '<span class="calendar-daynum">'+date.getDate()+'</span>'+
-        (dayRoutes.length ? '<span class="calendar-dots">'+
-          (openCount ? '<span class="calendar-dot" style="background:var(--route);"></span>'.repeat(Math.min(openCount,3)) : '')+
-          (doneCount ? '<span class="calendar-dot" style="background:var(--visited);"></span>'.repeat(Math.min(doneCount,3)) : '')+
-        '</span>' : '')+
-      '</button>';
+        (stopsPreview.length ? '<span class="calendar-mobile-count">'+stopsPreview.length+'</span>' : '')+
+        (stopsPreview.length ? '<div class="calendar-agency-preview">'+
+          shown.map(s=>'<div class="calendar-agency-line'+(s.completed?' calendar-agency-done':'')+'">'+escapeHtml(s.name)+'</div>').join('')+
+          (extra>0 ? '<div class="calendar-agency-more">+'+extra+' more</div>' : '')+
+        '</div>' : '')+
+      '</div>';
     });
     html += '</div>';
   });
