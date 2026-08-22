@@ -163,6 +163,7 @@
     background:var(--paper-raised);padding:16px 18px;margin-bottom:14px;
     border-left:5px solid var(--route);
   }
+  .route-card-completed{border-left-color:var(--visited);opacity:0.75;}
   .route-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;}
   .route-title{font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:15.5px;}
   .day-chip{
@@ -170,6 +171,31 @@
     background:var(--route-soft);color:var(--route-dark);padding:3px 9px;border-radius:999px;
     letter-spacing:.03em;font-weight:600;
   }
+
+  .calendar-card{
+    border:1.5px solid var(--line-strong);border-radius:var(--radius);
+    background:var(--paper-raised);padding:16px;
+  }
+  .calendar-nav{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
+  .calendar-month-label{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:18px;}
+  .calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-bottom:6px;}
+  .calendar-weekday-row{margin-bottom:8px;}
+  .calendar-weekday{
+    text-align:center;font-family:'IBM Plex Mono',monospace;font-size:11px;
+    text-transform:uppercase;color:var(--muted);letter-spacing:.04em;
+  }
+  .calendar-cell{
+    aspect-ratio:1/1;min-height:64px;border:1.5px solid var(--line);border-radius:8px;
+    background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;
+    padding:8px 4px 6px;cursor:pointer;gap:5px;
+  }
+  .calendar-cell:hover{border-color:var(--route);}
+  .calendar-cell-muted{color:var(--muted);background:var(--paper);}
+  .calendar-cell-today{border-color:var(--ink);border-width:2px;}
+  .calendar-cell-selected{background:var(--route-soft);border-color:var(--route);border-width:2px;}
+  .calendar-daynum{font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:15px;}
+  .calendar-dots{display:flex;flex-wrap:wrap;gap:2px;justify-content:center;max-width:44px;}
+  .calendar-dot{width:6px;height:6px;border-radius:50%;display:inline-block;}
   .stop-list{list-style:none;margin:12px 0 0;padding:0;}
   .stop-item{
     display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line);
@@ -280,6 +306,10 @@
     .stop-item select,.stop-item button{order:2;}
     .drive-seg{padding-left:4px;}
     .map-box{height:380px;}
+    .calendar-cell{min-height:46px;padding:6px 2px 4px;}
+    .calendar-daynum{font-size:13px;}
+    .calendar-month-label{font-size:15px;}
+    .calendar-dots{max-width:30px;}
   }
 </style>
 </head>
@@ -308,6 +338,9 @@ const state = {
   editingRouteId: null,
   agencySearch: '',
   dashboardYear: new Date().getFullYear(),
+  calendarYear: new Date().getFullYear(),
+  calendarMonth: new Date().getMonth(), // 0-11
+  calendarSelectedDate: toDateStr(new Date()),
   loaded: false,
   syncStatus: 'unconfigured', // unconfigured | connected | error | syncing
   lastSyncedAt: null,
@@ -1071,25 +1104,84 @@ function renderAgenciesTab(){
 // ---- Routes tab ----
 function renderRoutesTab(){
   const myRoutes = state.routes.filter(r => r.ownerId === state.currentRepId);
+  const year = state.calendarYear, month = state.calendarMonth;
+  const monthLabel = new Date(year, month, 1).toLocaleDateString(undefined, { month:'long', year:'numeric' });
+  const todayStr = toDateStr(new Date());
+  const selectedStr = state.calendarSelectedDate;
+
+  const routesByDate = {};
+  myRoutes.forEach(r => { if(r.date) (routesByDate[r.date] = routesByDate[r.date]||[]).push(r); });
+
+  const weeks = buildCalendarGrid(year, month);
   let html = '<div class="row-between" style="margin-bottom:14px;">'+
-    '<div class="addr">Build a route for a day of the week, then export it straight to your maps app.</div>'+
-    '<button class="primary" data-action="new-route">New route</button>'+
+    '<div class="addr">Click a date to see the routes assigned to it.</div>'+
   '</div>';
 
-  if(myRoutes.length === 0){
-    html += '<div class="empty"><div class="empty-title">No routes yet</div>Create a route and assign agencies to a day of the week.</div>';
-    return html;
+  html += '<div class="calendar-card">'+
+    '<div class="calendar-nav">'+
+      '<button class="ghost sm" data-action="calendar-prev-month">&larr;</button>'+
+      '<div class="calendar-month-label">'+monthLabel+'</div>'+
+      '<button class="ghost sm" data-action="calendar-next-month">&rarr;</button>'+
+      '<button class="ghost sm" data-action="calendar-today" style="margin-left:auto;">Today</button>'+
+    '</div>'+
+    '<div class="calendar-grid calendar-weekday-row">'+
+      ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>'<div class="calendar-weekday">'+d+'</div>').join('')+
+    '</div>';
+
+  weeks.forEach(week => {
+    html += '<div class="calendar-grid">';
+    week.forEach(date => {
+      const dStr = toDateStr(date);
+      const inMonth = date.getMonth() === month;
+      const dayRoutes = routesByDate[dStr] || [];
+      const openCount = dayRoutes.filter(r=>!r.completed).length;
+      const doneCount = dayRoutes.filter(r=>r.completed).length;
+      html += '<button class="calendar-cell'+
+          (inMonth?'':' calendar-cell-muted')+
+          (dStr===selectedStr?' calendar-cell-selected':'')+
+          (dStr===todayStr?' calendar-cell-today':'')+
+        '" data-action="select-calendar-date" data-date="'+dStr+'">'+
+        '<span class="calendar-daynum">'+date.getDate()+'</span>'+
+        (dayRoutes.length ? '<span class="calendar-dots">'+
+          (openCount ? '<span class="calendar-dot" style="background:var(--route);"></span>'.repeat(Math.min(openCount,3)) : '')+
+          (doneCount ? '<span class="calendar-dot" style="background:var(--visited);"></span>'.repeat(Math.min(doneCount,3)) : '')+
+        '</span>' : '')+
+      '</button>';
+    });
+    html += '</div>';
+  });
+  html += '</div>';
+
+  const selectedDate = new Date(selectedStr+'T00:00:00');
+  const selectedLabel = selectedDate.toLocaleDateString(undefined, { weekday:'long', month:'long', day:'numeric', year:'numeric' });
+  const selectedRoutes = (routesByDate[selectedStr] || []);
+
+  html += '<div class="row-between" style="margin:20px 0 10px;">'+
+    '<div class="section-label" style="margin:0;">Routes for '+selectedLabel+'</div>'+
+    '<button class="primary sm" data-action="new-route-for-date" data-date="'+selectedStr+'">New route for this date</button>'+
+  '</div>';
+
+  if(selectedRoutes.length === 0){
+    html += '<div class="empty">No routes assigned to this date yet.</div>';
+  } else {
+    selectedRoutes.forEach(r => { html += renderRouteCard(r); });
   }
 
-  const byDay = {};
-  myRoutes.forEach(r => { (byDay[r.day] = byDay[r.day]||[]).push(r); });
-  const dayOrder = WEEKDAYS.filter(d => byDay[d]);
-  Object.keys(byDay).forEach(d => { if(!dayOrder.includes(d)) dayOrder.push(d); });
+  const undated = myRoutes.filter(r => !r.date);
+  html += '<div class="row-between" style="margin-top:20px;">'+
+    '<div class="section-label" style="margin:0;">Not assigned to a date'+(undated.length?' ('+undated.length+')':'')+'</div>'+
+    '<button class="ghost sm" data-action="new-route">+ New route without a date</button>'+
+  '</div>';
+  if(undated.length){
+    undated.forEach(r => { html += renderRouteCard(r); });
+  } else {
+    html += '<div class="addr" style="margin:6px 0 0;">Handy for a recurring weekly template you\u2019ll assign a date to later.</div>';
+  }
 
-  dayOrder.forEach(day => {
-    html += '<div class="section-label">'+escapeHtml(day)+'</div>';
-    byDay[day].forEach(r => { html += renderRouteCard(r); });
-  });
+  if(myRoutes.length === 0){
+    html = '<div class="empty"><div class="empty-title">No routes yet</div>Pick a date on the calendar above, or use "Build a route" on the Map tab.</div>' + html;
+  }
+
   return html;
 }
 
@@ -1098,12 +1190,13 @@ function renderRouteCard(r){
   const year = state.dashboardYear;
   const dt = state.driveTimeCache[r.id];
 
-  let html = '<div class="route-card">'+
+  let html = '<div class="route-card'+(r.completed?' route-card-completed':'')+'">'+
     '<div class="route-head">'+
-      '<div><div class="route-title">'+escapeHtml(r.name)+'</div>'+
+      '<div><div class="route-title">'+escapeHtml(r.name)+(r.completed?' <span class="stamp visited-in-person">Completed</span>':'')+'</div>'+
       '<div class="addr">'+stopAgencies.length+' stop'+(stopAgencies.length===1?'':'s')+(r.date ? ' · '+new Date(r.date+'T00:00:00').toLocaleDateString() : '')+'</div></div>'+
       '<div class="row">'+
         '<span class="day-chip">'+escapeHtml(r.day)+'</span>'+
+        '<button class="ghost sm" data-action="toggle-route-completed" data-id="'+r.id+'">'+(r.completed?'Reopen':'Mark completed')+'</button>'+
         '<button class="ghost sm" data-action="edit-route" data-id="'+r.id+'">Edit</button>'+
         '<button class="ghost sm" data-action="duplicate-route" data-id="'+r.id+'">Duplicate</button>'+
         '<button class="ghost sm" data-action="delete-route" data-id="'+r.id+'">Delete</button>'+
@@ -1156,6 +1249,31 @@ function renderRouteCard(r){
 function formatTime(hhmm){
   const opt = TIME_OPTIONS.find(t => t.value === hhmm);
   return opt ? opt.label : hhmm;
+}
+
+function toDateStr(date){
+  return date.getFullYear()+'-'+String(date.getMonth()+1).padStart(2,'0')+'-'+String(date.getDate()).padStart(2,'0');
+}
+function weekdayNameForDateStr(dateStr){
+  return WEEKDAYS[(new Date(dateStr+'T00:00:00').getDay()+6)%7]; // getDay() is Sun=0; WEEKDAYS starts Monday
+}
+// Builds a 6-row grid of Date objects (Sun-Sat columns) covering the given month,
+// including the trailing/leading days from adjacent months to fill the grid.
+function buildCalendarGrid(year, month){
+  const firstOfMonth = new Date(year, month, 1);
+  const startOffset = firstOfMonth.getDay(); // 0=Sun
+  const gridStart = new Date(year, month, 1 - startOffset);
+  const weeks = [];
+  let cursor = new Date(gridStart);
+  for(let w=0; w<6; w++){
+    const week = [];
+    for(let d=0; d<7; d++){
+      week.push(new Date(cursor));
+      cursor.setDate(cursor.getDate()+1);
+    }
+    weeks.push(week);
+  }
+  return weeks;
 }
 
 function renderDriveSegment(dt, index){
@@ -1378,6 +1496,7 @@ function renderMapTab(){
   html += '<div id="map-status" class="addr" style="margin-bottom:8px;"></div>'+
     '<div id="agency-map" class="map-box"></div>'+
     '<div class="row" style="margin-top:10px;gap:16px;">'+
+      '<span class="addr"><span class="dot" style="display:inline-block;background:'+ROUTE_ASSIGNED_COLOR+';"></span> on an open route</span>'+
       '<span class="addr"><span class="dot visited-in-person" style="display:inline-block;"></span> visited in '+state.dashboardYear+'</span>'+
       '<span class="addr"><span class="dot pending" style="display:inline-block;"></span> not yet visited</span>'+
       (building ? '<span class="addr"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;border:2.5px solid var(--route);"></span> selected</span>' : '')+
@@ -1446,8 +1565,13 @@ function markerPopupHtml(a){
 // shape/color customization looks consistent regardless of which renders.
 const STAR_PATH_24 = 'M12 2 L14.9 9.1 L22.5 9.1 L16.3 13.6 L18.5 21 L12 16.5 L5.5 21 L7.7 13.6 L1.5 9.1 L9.1 9.1 Z';
 
+const ROUTE_ASSIGNED_COLOR = '#FFC800';
+function hasOpenRouteAssignment(agencyId){
+  return state.routes.some(r => !r.completed && r.stops.some(s => s.agencyId === agencyId));
+}
 function markerColorFor(agency){
   if(agency.markerColor) return agency.markerColor;
+  if(hasOpenRouteAssignment(agency.id)) return ROUTE_ASSIGNED_COLOR;
   const visited = visitsForAgencyYear(agency.id, state.dashboardYear).length > 0;
   return visited ? '#C98A1B' : '#B23B3B';
 }
@@ -1744,7 +1868,7 @@ function openAgencyModal(agencyId){
         '<div class="field" style="flex:1;"><label>Longitude</label><input type="text" id="f-lon" value="'+(editing&&editing.lon!=null?editing.lon:'')+'" placeholder="e.g. -95.3698"></div>'+
       '</div>'+
       '<div class="section-label">Map pin</div>'+
-      '<div class="addr" style="margin-bottom:8px;">By default, pins are colored automatically — amber if visited this year, red if not. Override that here if you want to flag this agency specially (e.g. a star for VIP accounts).</div>'+
+      '<div class="addr" style="margin-bottom:8px;">By default, pins are colored automatically — yellow while on an open (not-yet-completed) route, amber if visited this year, red if not. Override that here if you want to flag this agency specially (e.g. a star for VIP accounts).</div>'+
       '<div class="row">'+
         '<div class="field"><label>Shape</label><select id="f-marker-shape">'+
           '<option value="circle"'+(editing&&editing.markerShape==='star'?'':' selected')+'>Circle</option>'+
@@ -2007,11 +2131,41 @@ function onGlobalClick(e){
     state.editingRouteId = r.id;
     render();
   }
+  else if(action === 'new-route-for-date'){
+    const dateStr = btn.dataset.date;
+    const r = { id:uid(), name:'New route', day: weekdayNameForDateStr(dateStr), date: dateStr, stops:[], ownerId: state.currentRepId };
+    state.routes.push(r);
+    saveRoutes();
+    state.editingRouteId = r.id;
+    render();
+  }
+  else if(action === 'select-calendar-date'){ state.calendarSelectedDate = btn.dataset.date; render(); }
+  else if(action === 'calendar-prev-month'){
+    state.calendarMonth--;
+    if(state.calendarMonth < 0){ state.calendarMonth = 11; state.calendarYear--; }
+    render();
+  }
+  else if(action === 'calendar-next-month'){
+    state.calendarMonth++;
+    if(state.calendarMonth > 11){ state.calendarMonth = 0; state.calendarYear++; }
+    render();
+  }
+  else if(action === 'calendar-today'){
+    const now = new Date();
+    state.calendarYear = now.getFullYear();
+    state.calendarMonth = now.getMonth();
+    state.calendarSelectedDate = toDateStr(now);
+    render();
+  }
+  else if(action === 'toggle-route-completed'){
+    const r = state.routes.find(x=>x.id===id);
+    if(r){ r.completed = !r.completed; saveRoutes(); render(); showToast(r.completed ? 'Route marked completed' : 'Route reopened'); }
+  }
   else if(action === 'edit-route'){ state.editingRouteId = id; render(); }
   else if(action === 'close-route-editor'){ state.editingRouteId = null; render(); }
   else if(action === 'duplicate-route'){
     const r = state.routes.find(x=>x.id===id);
-    if(r){ state.routes.push({...r, id:uid(), name:r.name+' (copy)', date:'', stops:r.stops.map(s=>({...s}))}); saveRoutes(); render(); showToast('Route duplicated'); }
+    if(r){ state.routes.push({...r, id:uid(), name:r.name+' (copy)', date:'', completed:false, stops:r.stops.map(s=>({...s}))}); saveRoutes(); render(); showToast('Route duplicated'); }
   }
   else if(action === 'delete-route'){
     showConfirmModal('Delete this route?', function(){
