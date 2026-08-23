@@ -302,6 +302,27 @@
   }
   .leaflet-popup-content{margin:10px 12px;}
 
+  .map-layout{display:flex;gap:14px;align-items:flex-start;}
+  .map-main{flex:1;min-width:0;}
+  .map-preview-panel{
+    width:280px;flex-shrink:0;height:520px;display:flex;flex-direction:column;
+    border:1.5px solid var(--line-strong);border-radius:var(--radius);background:var(--paper-raised);overflow:hidden;
+  }
+  .map-preview-header{
+    display:flex;justify-content:space-between;align-items:center;padding:11px 14px;
+    border-bottom:1.5px solid var(--line);font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:13px;
+    flex-shrink:0;
+  }
+  .map-preview-scroll{overflow-y:auto;flex:1;-webkit-overflow-scrolling:touch;}
+  .map-preview-item{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer;}
+  .map-preview-item:hover{background:var(--paper);}
+  .map-preview-item-active{background:var(--route-soft);border-left:3px solid var(--route);}
+  .map-preview-date{
+    font-family:'IBM Plex Mono',monospace;font-size:10px;text-transform:uppercase;
+    color:var(--muted);letter-spacing:.03em;margin-bottom:3px;display:flex;align-items:center;gap:5px;
+  }
+  .map-preview-route-name{font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:13px;margin-bottom:3px;}
+
   .stale-banner{
     background:var(--pending-soft);border:1.5px solid var(--pending);border-radius:8px;
     padding:10px 14px;margin-bottom:16px;font-size:13px;color:#7A2626;
@@ -333,6 +354,8 @@
     .stop-item select,.stop-item button{order:2;}
     .drive-seg{padding-left:4px;}
     .map-box{height:380px;}
+    .map-layout{flex-direction:column;}
+    .map-preview-panel{width:100%;height:220px;}
     .calendar-cell{min-height:44px;padding:6px;}
     .calendar-daynum{font-size:13px;}
     .calendar-month-label{font-size:15px;}
@@ -359,6 +382,7 @@ const state = {
   mapViewScope: 'mine', // 'mine' | 'all'
   mapBuildMode: false,
   mapSelectedIds: [],
+  mapHighlightedRouteId: null,
   mapProvider: 'leaflet', // 'leaflet' | 'google' — set at render time based on whether a Google Maps key is configured
   repGateStep: 'pick', // 'pick' | 'pin' | 'new'
   repGateSelectedId: null,
@@ -1630,13 +1654,51 @@ function renderMapTab(){
   }
 
   html += '<div id="map-status" class="addr" style="margin-bottom:8px;"></div>'+
-    '<div id="agency-map" class="map-box"></div>'+
+    '<div class="map-layout">'+
+      '<div class="map-main"><div id="agency-map" class="map-box"></div></div>'+
+      renderMapPreviewPanel()+
+    '</div>'+
     '<div class="row" style="margin-top:10px;gap:16px;">'+
       '<span class="addr"><span class="dot" style="display:inline-block;background:'+ROUTE_ASSIGNED_COLOR+';"></span> on an open route</span>'+
       '<span class="addr"><span class="dot visited-in-person" style="display:inline-block;"></span> visited in '+state.dashboardYear+'</span>'+
       '<span class="addr"><span class="dot pending" style="display:inline-block;"></span> not yet visited</span>'+
       (building ? '<span class="addr"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;border:2.5px solid var(--route);"></span> selected</span>' : '')+
     '</div>';
+  return html;
+}
+
+function renderMapPreviewPanel(){
+  const myRoutes = state.routes.filter(r => r.ownerId === state.currentRepId && r.date);
+  const sorted = myRoutes.slice().sort((a,b) => a.date.localeCompare(b.date));
+  const todayStr = toDateStr(new Date());
+  const highlighted = state.mapHighlightedRouteId;
+
+  let html = '<div class="map-preview-panel">'+
+    '<div class="map-preview-header">'+
+      '<span>Routes by date</span>'+
+      (highlighted ? '<button class="ghost sm" data-action="clear-map-highlight">Show all</button>' : '')+
+    '</div>'+
+    '<div class="map-preview-scroll">';
+
+  if(sorted.length === 0){
+    html += '<div class="addr" style="padding:12px;">No dated routes yet — routes you assign a date to (from the Routes calendar, or "Build a route" here) will show up as a quick scrollable list here.</div>';
+  } else {
+    sorted.forEach(r => {
+      const stops = r.stops.map(s => agencyById(s.agencyId)).filter(Boolean);
+      const dateObj = new Date(r.date+'T00:00:00');
+      const dateLabel = dateObj.toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' });
+      const isToday = r.date === todayStr;
+      const active = highlighted === r.id;
+      html += '<div class="map-preview-item'+(active?' map-preview-item-active':'')+'" data-action="highlight-map-route" data-id="'+r.id+'">'+
+        '<div class="map-preview-date">'+dateLabel+(isToday?' <span class="owner-chip">today</span>':'')+'</div>'+
+        '<div class="map-preview-route-name">'+escapeHtml(r.name)+(r.completed?' <span class="stamp visited-in-person">Done</span>':'')+'</div>'+
+        '<div class="addr">'+stops.length+' stop'+(stops.length===1?'':'s')+
+          (stops.length ? ': '+stops.slice(0,2).map(a=>escapeHtml(a.name)).join(', ')+(stops.length>2?'…':'') : '')+
+        '</div>'+
+      '</div>';
+    });
+  }
+  html += '</div></div>';
   return html;
 }
 
@@ -1848,12 +1910,31 @@ async function initMapViewLeaflet(){
     markers.push(marker);
   });
 
-  if(markers.length === 1){
-    mapInstance.setView([located[0].lat, located[0].lon], 13);
-  } else {
-    mapInstance.fitBounds(L.featureGroup(markers).getBounds().pad(0.15));
+  const highlightedLocated = applyMapHighlight(located);
+  const boundsTargets = (highlightedLocated || located).map(a => markersByAgencyId[a.id]).filter(Boolean);
+  if(boundsTargets.length === 1){
+    mapInstance.setView(boundsTargets[0].getLatLng(), highlightedLocated ? 14 : 13);
+  } else if(boundsTargets.length > 1){
+    mapInstance.fitBounds(L.featureGroup(boundsTargets).getBounds().pad(0.15));
   }
   if(state.mapBuildMode) updateRouteBuilderPanel();
+}
+
+// Dims markers not on the currently-highlighted route (from the map preview
+// panel), and returns the highlighted subset so callers can fit bounds to it.
+function applyMapHighlight(located){
+  const highlighted = state.mapHighlightedRouteId ? state.routes.find(r=>r.id===state.mapHighlightedRouteId) : null;
+  if(!highlighted){
+    located.forEach(a => { const m = markersByAgencyId[a.id]; if(m) m.setOpacity(1); });
+    return null;
+  }
+  const hSet = new Set(highlighted.stops.map(s=>s.agencyId));
+  located.forEach(a => {
+    const m = markersByAgencyId[a.id];
+    if(m) m.setOpacity(hSet.has(a.id) ? 1 : 0.25);
+  });
+  const hLocated = located.filter(a => hSet.has(a.id));
+  return hLocated.length ? hLocated : null;
 }
 
 // Google Maps — used automatically when a Google Maps API key is configured
@@ -1913,11 +1994,15 @@ async function initMapViewGoogle(apiKey){
     bounds.extend(marker.getPosition());
   });
 
-  if(located.length === 1){
-    googleMapInstance.setCenter(bounds.getCenter());
-    googleMapInstance.setZoom(13);
-  } else {
-    googleMapInstance.fitBounds(bounds, 48);
+  const highlightedLocated = applyMapHighlight(located);
+  const boundsTargets = (highlightedLocated || located).map(a => markersByAgencyId[a.id]).filter(Boolean);
+  if(boundsTargets.length === 1){
+    googleMapInstance.setCenter(boundsTargets[0].getPosition());
+    googleMapInstance.setZoom(highlightedLocated ? 14 : 13);
+  } else if(boundsTargets.length > 1){
+    const b = new google.maps.LatLngBounds();
+    boundsTargets.forEach(m => b.extend(m.getPosition()));
+    googleMapInstance.fitBounds(b, 48);
   }
   if(state.mapBuildMode) updateRouteBuilderPanel();
 }
@@ -2173,6 +2258,11 @@ function onGlobalClick(e){
   else if(action === 'new-agency'){ openAgencyModal(null); }
   else if(action === 'set-agency-scope'){ state.agencyViewScope = btn.dataset.scope; render(); }
   else if(action === 'set-map-scope'){ state.mapViewScope = btn.dataset.scope; render(); }
+  else if(action === 'highlight-map-route'){
+    state.mapHighlightedRouteId = state.mapHighlightedRouteId === id ? null : id;
+    render();
+  }
+  else if(action === 'clear-map-highlight'){ state.mapHighlightedRouteId = null; render(); }
   else if(action === 'retry-map-geocode'){
     const scope = state.mapViewScope;
     const list = (scope === 'all' ? state.agencies : myAgencies()).filter(a => a.address);
