@@ -2,8 +2,21 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Field Route Manifest — Agency Visit Planner</title>
+
+<!-- Home screen icon + standalone-app behavior (iOS + Android) -->
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon-180.png">
+<link rel="apple-touch-icon" sizes="152x152" href="icons/icon-152.png">
+<meta name="theme-color" content="#0F1F4D">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Route Manifest">
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
@@ -226,6 +239,10 @@
   .drive-seg{
     list-style:none;padding:4px 0 4px 30px;font-size:12px;color:var(--muted);
     border-top:none;display:flex;align-items:center;gap:4px;flex-wrap:wrap;
+  }
+  .home-leg{padding-left:0;background:var(--paper);border-radius:8px;padding:8px 10px;margin:2px 0;}
+  .home-leg-label{
+    font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:12.5px;color:var(--ink-soft);
   }
 
   .metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px;}
@@ -681,6 +698,23 @@ async function ensureGeocoded(agency){
   }
 }
 
+async function ensureHomeGeocoded(){
+  const addr = (state.settings.homeAddress || '').trim();
+  if(!addr) return null;
+  if(state.settings.homeLat != null && state.settings.homeLon != null){
+    return { lat: state.settings.homeLat, lon: state.settings.homeLon };
+  }
+  try{
+    const loc = await geocodeAddress(addr);
+    state.settings.homeLat = loc.lat;
+    state.settings.homeLon = loc.lon;
+    saveSettings();
+    return loc;
+  }catch(e){
+    return null;
+  }
+}
+
 async function driveSegment(from, to){
   const attempt = async () => {
     const url = 'https://router.project-osrm.org/route/v1/driving/'+from.lon+','+from.lat+';'+to.lon+','+to.lat+'?overview=false';
@@ -719,33 +753,41 @@ async function estimateDriveTimesGoogle(routeId, apiKey){
   const agencies = r.stops.map(s => agencyById(s.agencyId)).filter(Boolean);
   await loadGoogleMaps(apiKey);
   const service = new google.maps.DistanceMatrixService();
+  const homeAddr = (state.settings.homeAddress || '').trim();
+
+  const singleLeg = async (fromAddr, toAddr) => {
+    const result = await new Promise((resolve, reject) => {
+      service.getDistanceMatrix({
+        origins:[fromAddr], destinations:[toAddr],
+        travelMode: google.maps.TravelMode.DRIVING,
+        drivingOptions:{ departureTime: new Date(), trafficModel:'bestguess' }
+      }, (res, status) => status === 'OK' ? resolve(res) : reject(new Error(status)));
+    });
+    const el = result.rows[0].elements[0];
+    if(el.status !== 'OK') throw new Error(el.status);
+    return { minutes: Math.round(el.duration.value/60), miles: Math.round(el.distance.value/160.9344)/10 };
+  };
+
   const segments = [];
   let anyError = false;
   for(let i=0; i<agencies.length-1; i++){
-    const from = agencies[i].address, to = agencies[i+1].address;
-    try{
-      const result = await new Promise((resolve, reject) => {
-        service.getDistanceMatrix({
-          origins:[from], destinations:[to],
-          travelMode: google.maps.TravelMode.DRIVING,
-          drivingOptions:{ departureTime: new Date(), trafficModel:'bestguess' }
-        }, (res, status) => status === 'OK' ? resolve(res) : reject(new Error(status)));
-      });
-      const el = result.rows[0].elements[0];
-      if(el.status !== 'OK') throw new Error(el.status);
-      segments.push({ minutes: Math.round(el.duration.value/60), miles: Math.round(el.distance.value/160.9344)/10 });
-    }catch(e){
-      segments.push(null);
-      anyError = true;
-    }
+    try{ segments.push(await singleLeg(agencies[i].address, agencies[i+1].address)); }
+    catch(e){ segments.push(null); anyError = true; }
   }
-  state.driveTimeCache[routeId] = { computing:false, segments, error:anyError, source:'google' };
+
+  let homeLeg = null, returnLeg = null, homeError = false;
+  if(homeAddr && agencies.length){
+    try{ homeLeg = await singleLeg(homeAddr, agencies[0].address); }catch(e){ homeError = true; }
+    try{ returnLeg = await singleLeg(agencies[agencies.length-1].address, homeAddr); }catch(e){ homeError = true; }
+  }
+
+  state.driveTimeCache[routeId] = { computing:false, segments, homeLeg, returnLeg, error:anyError||homeError, homeError, source:'google' };
   render();
 }
 
 async function estimateDriveTimes(routeId){
   const r = state.routes.find(x=>x.id===routeId);
-  if(!r || r.stops.length < 2) return;
+  if(!r || r.stops.length < 1) return;
   state.driveTimeCache[routeId] = { computing:true, segments:[], error:false };
   render();
 
@@ -782,7 +824,25 @@ async function estimateDriveTimes(routeId){
     }
     await sleep(400);
   }
-  state.driveTimeCache[routeId] = { computing:false, segments, error: failedNames.length>0 || routingFailed, failedNames, source:'free' };
+
+  let homeLeg = null, returnLeg = null, homeError = false;
+  const homeAddr = (state.settings.homeAddress || '').trim();
+  if(homeAddr && agencies.length){
+    const home = await ensureHomeGeocoded();
+    if(!home){
+      homeError = true;
+    } else {
+      const first = agencies[0], last = agencies[agencies.length-1];
+      if(first.lat!=null){
+        try{ await sleep(400); homeLeg = await driveSegment(home, first); }catch(e){ homeError = true; }
+      }
+      if(last.lat!=null){
+        try{ await sleep(400); returnLeg = await driveSegment(last, home); }catch(e){ homeError = true; }
+      }
+    }
+  }
+
+  state.driveTimeCache[routeId] = { computing:false, segments, homeLeg, returnLeg, error: failedNames.length>0 || routingFailed || homeError, failedNames, homeError, source:'free' };
   render();
 }
 
@@ -890,16 +950,26 @@ async function optimizeRouteOrder(routeId){
 
   const agencies = r.stops.map(s => agencyById(s.agencyId)).filter(Boolean);
   const googleKey = state.settings.googleMapsApiKey;
+  const homeAddr = (state.settings.homeAddress || '').trim();
+  let home = null;
+  if(homeAddr) home = await ensureHomeGeocoded();
+  const matrixAgencies = agencies.slice();
+  let homeIdx = null;
+  if(home){
+    homeIdx = matrixAgencies.length;
+    matrixAgencies.push({ lat: home.lat, lon: home.lon, address: homeAddr });
+  }
+
   let matrix;
   try{
     if(googleKey){
-      matrix = await getDurationMatrixGoogle(agencies, googleKey);
+      matrix = await getDurationMatrixGoogle(matrixAgencies, googleKey);
     } else {
       const missing = agencies.filter(a => a.lat==null || a.lon==null);
       for(let i=0;i<missing.length;i++){ await ensureGeocoded(missing[i]); await sleep(1100); }
       saveAgencies();
       if(agencies.some(a=>a.lat==null||a.lon==null)) throw new Error('some stops could not be located');
-      matrix = await getDurationMatrixOSRM(agencies);
+      matrix = await getDurationMatrixOSRM(matrixAgencies);
     }
   }catch(e){
     state.driveTimeCache[routeId] = { computing:false, segments:[], error:true, failedNames: agencies.filter(a=>a.lat==null||a.lon==null).map(a=>a.name) };
@@ -913,15 +983,22 @@ async function optimizeRouteOrder(routeId){
   let orderIdx;
   if(timed.length >= 1){
     const fixedIdx = timed.sort((a,b)=>a.time.localeCompare(b.time)).map(x=>x.i);
+    if(homeIdx != null) fixedIdx.unshift(homeIdx); // day starts from home before the first appointment
     const freeIdx = indices.filter(i => !fixedIdx.includes(i));
-    orderIdx = cheapestInsertionOrder(fixedIdx, freeIdx, matrix);
+    let fullOrder = cheapestInsertionOrder(fixedIdx, freeIdx, matrix);
+    if(homeIdx != null) fullOrder = fullOrder.filter(i => i !== homeIdx);
+    orderIdx = fullOrder;
   } else {
-    orderIdx = twoOptImprove(nearestNeighborOrder(0, indices, matrix), matrix);
+    const startIdx = homeIdx != null ? homeIdx : 0;
+    const searchIndices = homeIdx != null ? indices.concat([homeIdx]) : indices;
+    let fullOrder = nearestNeighborOrder(startIdx, searchIndices, matrix);
+    if(homeIdx != null) fullOrder = fullOrder.filter(i => i !== homeIdx);
+    orderIdx = twoOptImprove(fullOrder, matrix);
   }
 
   r.stops = orderIdx.map(i => r.stops[i]);
   saveRoutes();
-  showToast('Route order optimized');
+  showToast('Route order optimized'+(home ? ' around your starting address' : ''));
   await estimateDriveTimes(routeId); // refresh leg-by-leg times to match the new order
 }
 
@@ -1224,6 +1301,7 @@ function renderRouteCard(r){
 
   if(stopAgencies.length){
     html += '<ul class="stop-list">';
+    html += renderHomeLegRow(r, 'start');
     stopAgencies.forEach((s,i) => {
       const a = s.agency;
       const visited = visitsForAgencyYear(a.id, year).length > 0;
@@ -1238,9 +1316,10 @@ function renderRouteCard(r){
         html += '<li class="drive-seg">'+renderDriveSegment(dt, i)+'</li>';
       }
     });
+    html += renderHomeLegRow(r, 'end');
     html += '</ul>';
 
-    if(stopAgencies.length > 1){
+    if(stopAgencies.length > 1 || (state.settings.homeAddress||'').trim()){
       html += '<div class="row" style="margin-top:10px;">'+
         '<button class="ghost sm" data-action="estimate-drive" data-id="'+r.id+'" '+(dt&&dt.computing?'disabled':'')+'>'+
           (dt&&dt.computing ? 'Estimating…' : 'Estimate drive times') +
@@ -1308,6 +1387,9 @@ function driveErrorMessage(dt){
     return 'Couldn\u2019t locate: '+dt.failedNames.map(escapeHtml).join(', ')+
       '. Try a more complete address, or add coordinates manually on that agency\u2019s edit form.';
   }
+  if(dt.homeError){
+    return 'Couldn\u2019t locate your starting address — check it in Settings, or try a more complete version (street, city, state, zip).';
+  }
   return 'Some legs couldn\u2019t be estimated — the free routing service may be temporarily unavailable. Try again in a moment, or add a Google Maps API key in Settings for a more reliable estimate.';
 }
 
@@ -1340,13 +1422,14 @@ function renderRouteEditor(){
       '<div class="section-label" style="margin:0;">Stops in order ('+r.stops.length+')</div>'+
       '<div class="row" style="gap:6px;">'+
         (r.stops.length > 2 ? '<button class="primary sm" data-action="optimize-route" data-id="'+r.id+'" '+(dt&&dt.computing?'disabled':'')+'>'+(dt&&dt.computing?'Optimizing…':'Optimize order')+'</button>' : '')+
-        (r.stops.length > 1 ? '<button class="ghost sm" data-action="estimate-drive" data-id="'+r.id+'" '+(dt&&dt.computing?'disabled':'')+'>'+(dt&&dt.computing?'Estimating…':'Estimate drive times')+'</button>' : '')+
+        (r.stops.length > 0 ? '<button class="ghost sm" data-action="estimate-drive" data-id="'+r.id+'" '+(dt&&dt.computing?'disabled':'')+'>'+(dt&&dt.computing?'Estimating…':'Estimate drive times')+'</button>' : '')+
       '</div>'+
     '</div>';
   if(r.stops.length === 0){
     html += '<div class="empty">Select agencies from the list on the right to add stops.</div>';
   } else {
     html += '<ul class="stop-list" id="stop-order-list">';
+    html += renderHomeLegRow(r, 'start');
     r.stops.forEach((stop,i) => {
       const a = agencyById(stop.agencyId);
       if(!a) return;
@@ -1366,9 +1449,13 @@ function renderRouteEditor(){
         html += '<li class="drive-seg">'+renderDriveSegment(dt, i)+leaveByHint(r, i)+'</li>';
       }
     });
+    html += renderHomeLegRow(r, 'end');
     html += '</ul>';
     if(dt && dt.error){
       html += '<div class="addr" style="margin-top:6px;">'+driveErrorMessage(dt)+'</div>';
+    }
+    if(!(state.settings.homeAddress||'').trim()){
+      html += '<div class="addr" style="margin-top:6px;">Add a starting/ending address in Settings to also see drive time to your first stop and back at the end of the day.</div>';
     }
     if(r.stops.length > 2){
       html += '<div class="addr" style="margin-top:8px;">"Optimize order" reorders stops to cut total driving time, using real road data — any stop with a scheduled time is kept as a fixed checkpoint and the rest are slotted around it.</div>';
@@ -1394,17 +1481,39 @@ function renderRouteEditor(){
   return html;
 }
 
-function leaveByHint(r, index){
-  const dt = state.driveTimeCache[r.id];
-  if(!dt || !dt.segments) return '';
-  const seg = dt.segments[index];
-  const nextStop = r.stops[index+1];
-  if(!seg || !nextStop || !nextStop.time) return '';
-  const [hh,mm] = nextStop.time.split(':').map(Number);
+function leaveByLabel(seg, targetTime){
+  if(!seg || !targetTime) return '';
+  const [hh,mm] = targetTime.split(':').map(Number);
   const arriveBy = new Date(); arriveBy.setHours(hh,mm,0,0);
   const leaveBy = new Date(arriveBy.getTime() - seg.minutes*60000);
   const label = leaveBy.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
   return ' <span class="addr">&middot; leave by '+label+' to arrive on time</span>';
+}
+function leaveByHint(r, index){
+  const dt = state.driveTimeCache[r.id];
+  if(!dt || !dt.segments) return '';
+  const nextStop = r.stops[index+1];
+  return leaveByLabel(dt.segments[index], nextStop && nextStop.time);
+}
+function renderHomeLegRow(r, position){
+  // position: 'start' (home -> first stop) or 'end' (last stop -> home)
+  const homeAddr = (state.settings.homeAddress || '').trim();
+  if(!homeAddr) return '';
+  const dt = state.driveTimeCache[r.id];
+  const label = position === 'start' ? 'Starting point' : 'Return trip';
+  let body;
+  if(!dt || dt.computing){
+    body = '<span class="addr">&middot;&middot;&middot;</span>';
+  } else if(position === 'start' && dt.homeLeg){
+    body = '<span class="addr">&#8594; ~'+dt.homeLeg.minutes+' min drive ('+dt.homeLeg.miles+' mi)</span>'+leaveByLabel(dt.homeLeg, r.stops[0] && r.stops[0].time);
+  } else if(position === 'end' && dt.returnLeg){
+    body = '<span class="addr">&#8594; ~'+dt.returnLeg.minutes+' min drive ('+dt.returnLeg.miles+' mi) back</span>';
+  } else if(dt.homeError){
+    body = '<span class="addr">couldn\u2019t be estimated</span>';
+  } else {
+    body = '<span class="addr">not yet estimated</span>';
+  }
+  return '<li class="drive-seg home-leg"><span class="home-leg-label">\uD83C\uDFE0 '+label+' — '+escapeHtml(homeAddr)+'</span> '+body+'</li>';
 }
 
 // ---- Settings tab ----
@@ -1429,6 +1538,14 @@ function renderSettingsTab(){
       return '<li class="stop-item" style="padding:8px 0;"><div class="stop-body"><div class="stop-name">'+escapeHtml(r.name)+(r.id===state.currentRepId?' <span class="owner-chip">you</span>':'')+'</div><div class="stop-addr">'+count+' agenc'+(count===1?'y':'ies')+'</div></div></li>';
     }).join('')+
     '</ul>'+
+  '</div>';
+
+  html += '<div class="card">'+
+    '<h3 style="font-size:15px;margin-bottom:8px;">Starting &amp; ending point</h3>'+
+    '<div class="addr" style="margin-bottom:12px;">Used to estimate drive time from here to your first stop, and back here from your last stop, on any route. Change it any time — for example if you\u2019re starting from a different city that week.</div>'+
+    '<div class="field"><label>Address</label><input type="text" id="home-address-input" style="width:100%;" placeholder="e.g. 123 Main St, Houston, TX 77002" value="'+escapeHtml(state.settings.homeAddress||'')+'"></div>'+
+    '<button class="primary" style="margin-top:10px;" data-action="save-home-address">Save</button>'+
+    (state.settings.homeAddress ? ' <button class="ghost" style="margin-top:10px;" data-action="clear-home-address">Clear</button>' : '')+
   '</div>';
 
   html += '<div class="card">'+
@@ -2248,6 +2365,27 @@ function onGlobalClick(e){
     state.settings.staleDays = (isFinite(val) && val > 0) ? val : 30;
     saveSettings();
     showToast('Alert threshold saved');
+  }
+  else if(action === 'save-home-address'){
+    const addr = document.getElementById('home-address-input').value.trim();
+    if(addr !== (state.settings.homeAddress||'')){
+      delete state.settings.homeLat;
+      delete state.settings.homeLon;
+      state.driveTimeCache = {}; // old home-leg estimates no longer apply
+    }
+    state.settings.homeAddress = addr;
+    saveSettings();
+    render();
+    showToast(addr ? 'Starting address saved' : 'Starting address cleared');
+  }
+  else if(action === 'clear-home-address'){
+    delete state.settings.homeAddress;
+    delete state.settings.homeLat;
+    delete state.settings.homeLon;
+    state.driveTimeCache = {};
+    saveSettings();
+    render();
+    showToast('Starting address cleared');
   }
   else if(action === 'save-google-key'){
     const key = document.getElementById('google-key-input').value.trim();
