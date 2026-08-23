@@ -7,10 +7,10 @@
 
 <!-- Home screen icon + standalone-app behavior (iOS + Android) -->
 <link rel="manifest" href="manifest.json">
-<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
-<link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
-<link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon-180.png">
-<link rel="apple-touch-icon" sizes="152x152" href="icons/icon-152.png">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon-180.png">
+<link rel="apple-touch-icon" sizes="152x152" href="icon-152.png">
 <meta name="theme-color" content="#0F1F4D">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -56,7 +56,8 @@
   }
   h1,h2,h3{font-family:'Space Grotesk',sans-serif;margin:0;color:var(--ink);}
   .mono{font-family:'IBM Plex Mono',monospace;}
-  #app{max-width:1080px;margin:0 auto;padding:0 20px 60px;}
+  #app{max-width:1080px;margin:0 auto;padding:0 20px 60px;transition:max-width .15s ease;}
+  #app.map-active{max-width:1700px;}
 
   .topbar{
     display:flex;justify-content:space-between;align-items:flex-end;
@@ -297,7 +298,7 @@
   .scope-toggle button{border:none;border-radius:0;padding:7px 14px;}
   .scope-toggle button.active{background:var(--ink);color:#fff;}
   .map-box{
-    width:100%;height:520px;border-radius:var(--radius);border:1.5px solid var(--line-strong);
+    width:100%;height:70vh;min-height:440px;max-height:800px;border-radius:var(--radius);border:1.5px solid var(--line-strong);
     background:var(--paper-raised);
   }
   .leaflet-popup-content{margin:10px 12px;}
@@ -305,7 +306,7 @@
   .map-layout{display:flex;gap:14px;align-items:flex-start;}
   .map-main{flex:1;min-width:0;}
   .map-preview-panel{
-    width:280px;flex-shrink:0;height:520px;display:flex;flex-direction:column;
+    width:300px;flex-shrink:0;height:70vh;min-height:440px;max-height:800px;display:flex;flex-direction:column;
     border:1.5px solid var(--line-strong);border-radius:var(--radius);background:var(--paper-raised);overflow:hidden;
   }
   .map-preview-header{
@@ -353,9 +354,9 @@
     .stop-item .drag-handle,.stop-item .stop-num{order:0;}
     .stop-item select,.stop-item button{order:2;}
     .drive-seg{padding-left:4px;}
-    .map-box{height:380px;}
-    .map-layout{flex-direction:column;}
-    .map-preview-panel{width:100%;height:220px;}
+    .map-box{height:380px;min-height:0;max-height:none;}
+    .map-layout{flex-direction:column;align-items:stretch;}
+    .map-preview-panel{width:100%;height:220px;min-height:0;max-height:none;}
     .calendar-cell{min-height:44px;padding:6px;}
     .calendar-daynum{font-size:13px;}
     .calendar-month-label{font-size:15px;}
@@ -1031,6 +1032,7 @@ function render(){
   const app = document.getElementById('app');
   if(!state.loaded){ app.innerHTML = '<div style="padding:60px 0;text-align:center;color:var(--muted)">Loading manifest…</div>'; return; }
   if(!currentRep()){ app.innerHTML = renderRepGate(); attachGlobalListeners(); return; }
+  app.classList.toggle('map-active', state.tab === 'map' && state.editingRouteId === null);
   app.innerHTML = renderTopbar() + renderTabs() + renderStaleBanner() + renderBody();
   attachGlobalListeners();
 }
@@ -2523,6 +2525,16 @@ function setupDragReorder(){
     });
   });
 }
+
+let resizeDebounce = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeDebounce);
+  resizeDebounce = setTimeout(() => {
+    if(state.tab !== 'map') return;
+    if(state.mapProvider === 'leaflet' && mapInstance){ mapInstance.invalidateSize(); }
+    else if(state.mapProvider === 'google' && googleMapInstance && window.google){ google.maps.event.trigger(googleMapInstance, 'resize'); }
+  }, 200);
+});
 
 loadState();
 </script>
