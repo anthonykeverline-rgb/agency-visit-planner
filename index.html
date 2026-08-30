@@ -19,7 +19,7 @@
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js" defer></script>
 <style>
   :root{
     --ink:#0F1F4D;
@@ -457,6 +457,31 @@ async function remoteGet(key){
   const data = await res.json();
   return data.value != null ? JSON.parse(data.value) : null;
 }
+const SYNCED_KEYS = ['agencies','routes','visits','settings','reps'];
+
+// Fetches every synced key in a single request instead of five separate ones —
+// each Apps Script round-trip has real latency, and five of them (even run
+// concurrently) are often serialized on Google's end, which is the single
+// biggest cause of a slow load. Falls back automatically to the older
+// one-request-per-key approach if the deployed Apps Script hasn't been
+// updated to support this yet, so nothing breaks either way.
+async function remoteGetAll(){
+  const endpoint = getEndpoint();
+  if(!endpoint) return null;
+  const res = await fetch(endpoint, { method:'GET' });
+  if(!res.ok) throw new Error('Bad response');
+  const data = await res.json();
+  if(data && typeof data === 'object' && !('value' in data)){
+    const parsed = {};
+    SYNCED_KEYS.forEach(k => { parsed[k] = data[k] != null ? JSON.parse(data[k]) : null; });
+    return parsed;
+  }
+  // Old backend (single-key only) — fall back to the slower per-key requests.
+  const results = await Promise.all(SYNCED_KEYS.map(remoteGet));
+  const parsed = {};
+  SYNCED_KEYS.forEach((k,i) => { parsed[k] = results[i]; });
+  return parsed;
+}
 async function remoteSet(key, value){
   const endpoint = getEndpoint();
   if(!endpoint) return false;
@@ -471,40 +496,60 @@ async function remoteSet(key, value){
 
 async function loadState(){
   const endpoint = getEndpoint();
-  const keys = ['agencies','routes','visits','settings','reps'];
-  if(endpoint){
-    state.syncStatus = 'syncing';
-    try{
-      const [a, r, v, st, rp] = await Promise.all(keys.map(remoteGet));
-      state.agencies = a || [];
-      state.routes = r || [];
-      state.visits = v || [];
-      state.settings = st || { staleDays: 30 };
-      state.reps = rp || [];
-      keys.forEach(k => localSet(k, state[k]));
-      state.syncStatus = 'connected';
-      state.lastSyncedAt = new Date();
-    }catch(e){
-      state.agencies = localGet('agencies') || [];
-      state.routes = localGet('routes') || [];
-      state.visits = localGet('visits') || [];
-      state.settings = localGet('settings') || { staleDays: 30 };
-      state.reps = localGet('reps') || [];
-      state.syncStatus = 'error';
-    }
-  } else {
+  const hasLocalCache = localGet('agencies') !== null;
+
+  const applyLocal = () => {
     state.agencies = localGet('agencies') || [];
     state.routes = localGet('routes') || [];
     state.visits = localGet('visits') || [];
     state.settings = localGet('settings') || { staleDays: 30 };
     state.reps = localGet('reps') || [];
-    state.syncStatus = 'unconfigured';
+  };
+  const restoreRep = () => {
+    const remembered = getRememberedRepId();
+    if(remembered && repById(remembered)) state.currentRepId = remembered;
+  };
+
+  if(hasLocalCache){
+    // Show the app instantly with whatever was synced to this device last time,
+    // then quietly refresh from the shared sheet in the background. Far less
+    // waiting than blocking the whole screen on a network round-trip every time.
+    applyLocal();
+    migrateRouteStops();
+    restoreRep();
+    state.syncStatus = endpoint ? 'syncing' : 'unconfigured';
+    state.loaded = true;
+    render();
   }
-  migrateRouteStops();
-  const remembered = getRememberedRepId();
-  if(remembered && repById(remembered)) state.currentRepId = remembered;
-  state.loaded = true;
-  render();
+
+  if(endpoint){
+    state.syncStatus = 'syncing';
+    try{
+      const all = await remoteGetAll();
+      state.agencies = all.agencies || [];
+      state.routes = all.routes || [];
+      state.visits = all.visits || [];
+      state.settings = all.settings || { staleDays: 30 };
+      state.reps = all.reps || [];
+      SYNCED_KEYS.forEach(k => localSet(k, state[k]));
+      state.syncStatus = 'connected';
+      state.lastSyncedAt = new Date();
+    }catch(e){
+      if(!hasLocalCache) applyLocal();
+      state.syncStatus = 'error';
+    }
+    migrateRouteStops();
+    restoreRep();
+    state.loaded = true;
+    render();
+  } else if(!hasLocalCache){
+    applyLocal();
+    state.syncStatus = 'unconfigured';
+    migrateRouteStops();
+    restoreRep();
+    state.loaded = true;
+    render();
+  }
 }
 
 // Older saved routes stored `agencyIds: [id, id, ...]`. Newer routes store
@@ -1811,12 +1856,16 @@ function applyMarkerSelectionStyle(marker, agencyId){
 }
 
 function openSaveMapRouteModal(){
+  const today = toDateStr(new Date());
   const root = document.getElementById('modal-root');
   root.innerHTML = '<div class="modal-backdrop">'+
     '<div class="modal">'+
       '<h3>Save as route</h3>'+
       '<div class="field"><label>Route name</label><input type="text" id="map-route-name" value="New route" style="width:100%;"></div>'+
-      '<div class="field"><label>Day of week</label><select id="map-route-day" style="width:100%;">'+WEEKDAYS.map(d=>'<option value="'+d+'">'+d+'</option>').join('')+'</select></div>'+
+      '<div class="field"><label>Date</label><input type="date" id="map-route-date" value="'+today+'" style="width:100%;"></div>'+
+      '<div class="field"><label>Day of week</label><select id="map-route-day" style="width:100%;">'+WEEKDAYS.map(d=>'<option value="'+d+'" '+(d===weekdayNameForDateStr(today)?'selected':'')+'>'+d+'</option>').join('')+'</select>'+
+        '<div class="addr" style="margin-top:4px;">Set automatically from the date — clear the date above if this is a recurring template with no specific day.</div>'+
+      '</div>'+
       '<div class="addr">Stops are saved in the order you tapped them — you can reorder, set times, and optimize once the route opens.</div>'+
       '<div class="modal-actions">'+
         '<button data-action="close-modal">Cancel</button>'+
@@ -2175,6 +2224,10 @@ function attachGlobalListeners(){
 function onGlobalChange(e){
   const t = e.target;
   if(t.id === 'dash-year'){ state.dashboardYear = parseInt(t.value,10); render(); }
+  if(t.id === 'map-route-date'){
+    const daySelect = document.getElementById('map-route-day');
+    if(daySelect && t.value) daySelect.value = weekdayNameForDateStr(t.value);
+  }
   if(t.dataset && t.dataset.action === 'set-stop-time'){
     const r = state.routes.find(x=>x.id===state.editingRouteId);
     const i = parseInt(t.dataset.index,10);
@@ -2275,9 +2328,10 @@ function onGlobalClick(e){
   else if(action === 'cancel-map-build'){ state.mapBuildMode = false; state.mapSelectedIds = []; render(); }
   else if(action === 'save-map-route'){
     const name = document.getElementById('map-route-name').value.trim() || 'New route';
-    const day = document.getElementById('map-route-day').value;
+    const date = document.getElementById('map-route-date').value;
+    const day = date ? weekdayNameForDateStr(date) : document.getElementById('map-route-day').value;
     const newRoute = {
-      id: uid(), name, day, date:'', ownerId: state.currentRepId,
+      id: uid(), name, day, date, ownerId: state.currentRepId,
       stops: state.mapSelectedIds.map(aid => ({ agencyId: aid, time:'' }))
     };
     state.routes.push(newRoute);
