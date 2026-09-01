@@ -297,6 +297,31 @@
   .scope-toggle{display:flex;border:1.5px solid var(--ink);border-radius:8px;overflow:hidden;}
   .scope-toggle button{border:none;border-radius:0;padding:7px 14px;}
   .scope-toggle button.active{background:var(--ink);color:#fff;}
+
+  .segment-grid{
+    display:grid;grid-template-columns:repeat(auto-fill, minmax(280px, 1fr));
+    gap:14px;align-items:start;margin-bottom:18px;
+  }
+  .segment-card{
+    border:1.5px solid var(--line-strong);border-radius:var(--radius);
+    background:var(--paper-raised);overflow:hidden;
+  }
+  .segment-card-header{
+    display:flex;justify-content:space-between;align-items:center;gap:8px;
+    padding:10px 12px;border-bottom:1.5px solid var(--line);background:var(--paper);
+  }
+  .segment-name-input{
+    font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:13.5px;
+    border:none;background:transparent;padding:2px 0;flex:1;min-width:0;color:var(--ink);
+  }
+  .segment-name-input:focus{outline:1.5px solid var(--route);outline-offset:2px;border-radius:4px;}
+  .segment-card-body{padding:4px 12px;max-height:360px;overflow-y:auto;}
+  .segment-agency-row{
+    display:flex;justify-content:space-between;align-items:center;gap:8px;
+    padding:8px 0;border-top:1px solid var(--line);
+  }
+  .segment-agency-row:first-child{border-top:none;}
+  .segment-agency-row select{max-width:112px;flex-shrink:0;}
   .map-box{
     width:100%;height:70vh;min-height:440px;max-height:800px;border-radius:var(--radius);border:1.5px solid var(--line-strong);
     background:var(--paper-raised);
@@ -323,6 +348,12 @@
     color:var(--muted);letter-spacing:.03em;margin-bottom:3px;display:flex;align-items:center;gap:5px;
   }
   .map-preview-route-name{font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:13px;margin-bottom:3px;}
+  .map-preview-stop-list{list-style:none;margin:4px 0 0;padding:0;}
+  .map-preview-stop-row{
+    display:flex;align-items:center;gap:6px;padding:6px 0;border-top:1px solid var(--line);cursor:grab;
+  }
+  .map-preview-stop-row.dragging{opacity:.4;}
+  .map-preview-item[data-route-drop]{transition:background .1s;}
 
   .stale-banner{
     background:var(--pending-soft);border:1.5px solid var(--pending);border-radius:8px;
@@ -378,6 +409,10 @@ const state = {
   routes: [],
   visits: [],
   reps: [],
+  segments: [],
+  agencyViewMode: 'list', // 'list' | 'segments'
+  segmentBuilding: false,
+  segmentStatus: '',
   currentRepId: null,
   agencyViewScope: 'mine', // 'mine' | 'all'
   mapViewScope: 'mine', // 'mine' | 'all'
@@ -458,7 +493,7 @@ async function remoteGet(key){
   const data = await res.json();
   return data.value != null ? JSON.parse(data.value) : null;
 }
-const SYNCED_KEYS = ['agencies','routes','visits','settings','reps'];
+const SYNCED_KEYS = ['agencies','routes','visits','settings','reps','segments'];
 
 // Fetches every synced key in a single request instead of five separate ones —
 // each Apps Script round-trip has real latency, and five of them (even run
@@ -505,6 +540,7 @@ async function loadState(){
     state.visits = localGet('visits') || [];
     state.settings = localGet('settings') || { staleDays: 30 };
     state.reps = localGet('reps') || [];
+    state.segments = localGet('segments') || [];
   };
   const restoreRep = () => {
     const remembered = getRememberedRepId();
@@ -532,6 +568,7 @@ async function loadState(){
       state.visits = all.visits || [];
       state.settings = all.settings || { staleDays: 30 };
       state.reps = all.reps || [];
+      state.segments = all.segments || [];
       SYNCED_KEYS.forEach(k => localSet(k, state[k]));
       state.syncStatus = 'connected';
       state.lastSyncedAt = new Date();
@@ -586,6 +623,7 @@ const saveAgencies = () => persist('agencies', state.agencies);
 const saveRoutes = () => persist('routes', state.routes);
 const saveVisits = () => persist('visits', state.visits);
 const saveReps = () => persist('reps', state.reps);
+const saveSegments = () => persist('segments', state.segments);
 const saveSettings = () => persist('settings', state.settings);
 
 async function syncNow(){
@@ -621,6 +659,137 @@ function escapeHtml(s){
 
 // ---------- derived helpers ----------
 function agencyById(id){ return state.agencies.find(a => a.id === id); }
+
+// ---------- geographic segmentation ----------
+// Groups agencies into visit-day-sized regional segments: first bucket by
+// 3-digit ZIP prefix (a standard, well-known geographic proxy — no lookup
+// table needed), then split any bucket bigger than a comfortable day's worth
+// of stops into tighter sub-groups using real coordinates (k-means on
+// lat/lon). Agencies a rep has manually moved are left exactly where they
+// were put, rebuild after rebuild.
+function extractZip(address){
+  const m = (address||'').match(/(\d{5})(?:-\d{4})?\s*$/);
+  return m ? m[1] : null;
+}
+function segmentById(id){ return state.segments.find(s => s.id === id); }
+
+function kmeansCluster(points, k, iterations){
+  if(points.length === 0) return [];
+  if(k <= 1 || points.length <= k) return points.map((p,i)=>[i]);
+  const shuffled = points.map((_,i)=>i).sort(() => Math.random()-0.5);
+  let centroids = [];
+  for(let i=0;i<k;i++) centroids.push({ lat: points[shuffled[i]].lat, lon: points[shuffled[i]].lon });
+  let assignments = new Array(points.length).fill(0);
+  for(let iter=0; iter<iterations; iter++){
+    for(let i=0;i<points.length;i++){
+      let best = 0, bestDist = Infinity;
+      for(let c=0;c<k;c++){
+        const dx = points[i].lat-centroids[c].lat, dy = points[i].lon-centroids[c].lon;
+        const d = dx*dx + dy*dy;
+        if(d < bestDist){ bestDist = d; best = c; }
+      }
+      assignments[i] = best;
+    }
+    const sums = Array.from({length:k}, () => ({lat:0, lon:0, n:0}));
+    for(let i=0;i<points.length;i++){
+      const c = assignments[i];
+      sums[c].lat += points[i].lat; sums[c].lon += points[i].lon; sums[c].n++;
+    }
+    for(let c=0;c<k;c++){
+      if(sums[c].n > 0) centroids[c] = { lat: sums[c].lat/sums[c].n, lon: sums[c].lon/sums[c].n };
+    }
+  }
+  const groups = Array.from({length:k}, () => []);
+  assignments.forEach((c,i) => groups[c].push(i));
+  return groups.filter(g => g.length > 0);
+}
+
+async function rebuildSegments(){
+  if(state.segmentBuilding) return;
+  state.segmentBuilding = true;
+  state.segmentStatus = 'Checking agency locations…';
+  render();
+
+  const targetSize = state.settings.segmentTargetSize || 10;
+  const mine = myAgencies().filter(a => a.address);
+  const locked = mine.filter(a => a.segmentLocked && a.segmentId);
+  const unlocked = mine.filter(a => !(a.segmentLocked && a.segmentId));
+
+  // Geocode any unlocked agency missing coordinates — needed to sub-split
+  // an oversized ZIP-prefix bucket into tighter, driveable groups.
+  const missing = unlocked.filter(a => a.lat == null && a.lon == null && !a.geocodeFailed);
+  for(let i=0;i<missing.length;i++){
+    state.segmentStatus = 'Locating agencies… ('+(i+1)+' of '+missing.length+')';
+    render();
+    await ensureGeocoded(missing[i]);
+    await sleep(1100); // respect Nominatim's ~1 request/second usage policy
+  }
+  if(missing.length) saveAgencies();
+
+  state.segmentStatus = 'Grouping by region…';
+  render();
+
+  const buckets = {};
+  unlocked.forEach(a => {
+    const zip = extractZip(a.address);
+    const key = zip ? zip.slice(0,3) : '__unzoned__';
+    (buckets[key] = buckets[key] || []).push(a);
+  });
+
+  const newSegments = [];
+  const assignment = {};
+
+  Object.keys(buckets).forEach(key => {
+    const group = buckets[key];
+    if(key === '__unzoned__'){
+      const segId = uid();
+      newSegments.push({ id: segId, name: 'No ZIP found', auto:true });
+      group.forEach(a => assignment[a.id] = segId);
+      return;
+    }
+    const withCoords = group.filter(a => a.lat != null && a.lon != null);
+    const withoutCoords = group.filter(a => a.lat == null || a.lon == null);
+    let clusters;
+    if(withCoords.length === 0 || withCoords.length <= targetSize){
+      clusters = [group];
+    } else {
+      const k = Math.max(1, Math.round(withCoords.length / targetSize));
+      const idxGroups = kmeansCluster(withCoords.map(a => ({lat:a.lat, lon:a.lon})), k, 12);
+      clusters = idxGroups.map(idxs => idxs.map(i => withCoords[i]));
+      if(withoutCoords.length && clusters.length) clusters[0] = clusters[0].concat(withoutCoords);
+      else if(withoutCoords.length) clusters.push(withoutCoords);
+    }
+    clusters.forEach((clusterAgencies, idx) => {
+      if(!clusterAgencies.length) return;
+      const zipCounts = {};
+      clusterAgencies.forEach(a => { const z = extractZip(a.address); if(z) zipCounts[z] = (zipCounts[z]||0)+1; });
+      const topZip = Object.keys(zipCounts).sort((x,y) => zipCounts[y]-zipCounts[x])[0];
+      const label = (topZip ? topZip : key+'xx') + ' area';
+      const suffix = clusters.length > 1 ? ' '+String.fromCharCode(65+idx) : '';
+      const segId = uid();
+      newSegments.push({ id: segId, name: label+suffix, auto:true });
+      clusterAgencies.forEach(a => assignment[a.id] = segId);
+    });
+  });
+
+  unlocked.forEach(a => { a.segmentId = assignment[a.id] || null; a.segmentLocked = false; });
+  // Preserve the segment definitions any manually-locked agencies still point to.
+  locked.forEach(a => {
+    if(a.segmentId && !newSegments.find(s => s.id === a.segmentId)){
+      const old = segmentById(a.segmentId);
+      newSegments.push(old || { id:a.segmentId, name:'Custom segment', auto:false });
+    }
+  });
+
+  state.segments = newSegments;
+  state.segmentBuilding = false;
+  state.segmentStatus = '';
+  saveAgencies();
+  saveSegments();
+  render();
+  showToast('Segments rebuilt');
+}
+
 
 function visitsForAgencyYear(agencyId, year){
   return state.visits.filter(v => v.agencyId === agencyId && new Date(v.date).getFullYear() === year);
@@ -1205,6 +1374,97 @@ function renderBody(){
 
 // ---- Agencies tab ----
 function renderAgenciesTab(){
+  const mode = state.agencyViewMode;
+  let html = '<div class="row-between" style="margin-bottom:14px;">'+
+    '<div class="scope-toggle">'+
+      '<button class="'+(mode==='list'?'active':'')+'" data-action="set-agency-view-mode" data-mode="list">List</button>'+
+      '<button class="'+(mode==='segments'?'active':'')+'" data-action="set-agency-view-mode" data-mode="segments">Segments</button>'+
+    '</div>'+
+  '</div>';
+  html += mode === 'segments' ? renderAgenciesSegmentsView() : renderAgenciesListView();
+  return html;
+}
+
+function renderAgenciesSegmentsView(){
+  const mine = myAgencies();
+  const targetSize = state.settings.segmentTargetSize || 10;
+
+  let html = '<div class="card-flat" style="padding:16px 18px;margin-bottom:16px;">'+
+    '<div class="row-between">'+
+      '<div class="addr" style="max-width:520px;">Groups your agencies by region using ZIP codes, then splits any oversized area into tighter clusters using real coordinates — sized to roughly a day\u2019s worth of visits. Move any agency to a different segment any time; it\u2019ll stay put on future rebuilds.</div>'+
+      '<div class="row">'+
+        '<div class="field" style="width:90px;"><label>Target size</label><input type="text" inputmode="numeric" id="segment-target-size" value="'+targetSize+'"></div>'+
+        '<button class="ghost" data-action="new-segment">+ New segment</button>'+
+        '<button class="primary" data-action="rebuild-segments" '+(state.segmentBuilding?'disabled':'')+'>'+(state.segmentBuilding?'Building…':(state.segments.length?'Rebuild segments':'Build segments'))+'</button>'+
+      '</div>'+
+    '</div>'+
+    (state.segmentStatus ? '<div class="addr" style="margin-top:8px;">'+escapeHtml(state.segmentStatus)+'</div>' : '')+
+  '</div>';
+
+  if(mine.length === 0){
+    html += '<div class="empty"><div class="empty-title">No agencies yet</div>Add some agencies first, then build segments to group them by region.</div>';
+    return html;
+  }
+  if(state.segments.length === 0){
+    html += '<div class="empty"><div class="empty-title">No segments yet</div>Click "Build segments" above to group your agencies by region automatically.</div>';
+    return html;
+  }
+
+  const bySegment = {};
+  mine.forEach(a => { const key = a.segmentId || '__none__'; (bySegment[key] = bySegment[key] || []).push(a); });
+
+  const segmentOptions = (currentId) => {
+    let opts = '<option value="" '+(!currentId?'selected':'')+'>Unassigned</option>';
+    opts += state.segments.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(s =>
+      '<option value="'+s.id+'" '+(currentId===s.id?'selected':'')+'>'+escapeHtml(s.name)+'</option>'
+    ).join('');
+    return opts;
+  };
+
+  html += '<div class="segment-grid">';
+  state.segments.slice().sort((a,b)=>a.name.localeCompare(b.name)).forEach(seg => {
+    const agencies = (bySegment[seg.id] || []).sort((a,b)=>a.name.localeCompare(b.name));
+    html += '<div class="segment-card">'+
+      '<div class="segment-card-header">'+
+        '<input type="text" class="segment-name-input" data-action="rename-segment" data-id="'+seg.id+'" value="'+escapeHtml(seg.name)+'">'+
+        '<div class="row" style="gap:4px;">'+
+          '<span class="owner-chip">'+agencies.length+'</span>'+
+          '<button class="ghost sm" data-action="delete-segment" data-id="'+seg.id+'" title="Delete segment">&times;</button>'+
+        '</div>'+
+      '</div>'+
+      '<div class="segment-card-body">';
+    if(agencies.length === 0){
+      html += '<div class="addr" style="padding:10px 0;">No agencies here yet.</div>';
+    } else {
+      agencies.forEach(a => {
+        const zip = extractZip(a.address);
+        html += '<div class="segment-agency-row">'+
+          '<div class="stop-body"><div class="stop-name">'+escapeHtml(a.name)+(a.segmentLocked?' <span class="owner-chip">moved</span>':'')+'</div>'+
+          '<div class="stop-addr">'+escapeHtml(zip||a.address)+'</div></div>'+
+          '<select class="mono" style="font-size:11.5px;padding:4px 5px;" data-action="move-agency-segment" data-id="'+a.id+'">'+segmentOptions(a.segmentId)+'</select>'+
+        '</div>';
+      });
+    }
+    html += '</div></div>';
+  });
+  html += '</div>';
+
+  const unassigned = bySegment['__none__'] || [];
+  if(unassigned.length){
+    html += '<div class="section-label">Unassigned ('+unassigned.length+')</div>';
+    html += '<div class="segment-card" style="max-width:420px;"><div class="segment-card-body">';
+    unassigned.sort((a,b)=>a.name.localeCompare(b.name)).forEach(a => {
+      html += '<div class="segment-agency-row">'+
+        '<div class="stop-body"><div class="stop-name">'+escapeHtml(a.name)+'</div><div class="stop-addr">'+escapeHtml(extractZip(a.address)||a.address)+'</div></div>'+
+        '<select class="mono" style="font-size:11.5px;padding:4px 5px;" data-action="move-agency-segment" data-id="'+a.id+'">'+segmentOptions(a.segmentId)+'</select>'+
+      '</div>';
+    });
+    html += '</div></div>';
+  }
+  return html;
+}
+
+function renderAgenciesListView(){
   const q = state.agencySearch.trim().toLowerCase();
   const scope = state.agencyViewScope;
   const base = scope === 'all' ? state.agencies : myAgencies();
@@ -1689,6 +1949,7 @@ function renderMapTab(){
       (building
         ? '<button class="ghost" data-action="cancel-map-build">Cancel</button>'
         : '<button class="primary" data-action="toggle-map-build">Build a route</button>')+
+      '<button class="ghost" data-action="refresh-agency-locations" title="Re-locate every agency on the map from scratch">Refresh locations</button>'+
     '</div>'+
   '</div>';
 
@@ -1730,24 +1991,100 @@ function renderMapPreviewPanel(){
 
   if(sorted.length === 0){
     html += '<div class="addr" style="padding:12px;">No dated routes yet — routes you assign a date to (from the Routes calendar, or "Build a route" here) will show up as a quick scrollable list here.</div>';
-  } else {
-    sorted.forEach(r => {
-      const stops = r.stops.map(s => agencyById(s.agencyId)).filter(Boolean);
-      const dateObj = new Date(r.date+'T00:00:00');
-      const dateLabel = dateObj.toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' });
-      const isToday = r.date === todayStr;
-      const active = highlighted === r.id;
-      html += '<div class="map-preview-item'+(active?' map-preview-item-active':'')+'" data-action="highlight-map-route" data-id="'+r.id+'">'+
+  } else if(sorted.length < 2){
+    html += '<div class="addr" style="padding:12px;">Drag-and-drop between dates needs at least two dated routes to move stops between.</div>';
+  }
+  sorted.forEach(r => {
+    const stops = r.stops.map((s,i) => ({ agency: agencyById(s.agencyId), index:i })).filter(x => x.agency);
+    const dateObj = new Date(r.date+'T00:00:00');
+    const dateLabel = dateObj.toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' });
+    const isToday = r.date === todayStr;
+    const active = highlighted === r.id;
+    html += '<div class="map-preview-item'+(active?' map-preview-item-active':'')+'" data-route-drop="'+r.id+'">'+
+      '<div data-action="highlight-map-route" data-id="'+r.id+'" style="cursor:pointer;">'+
         '<div class="map-preview-date">'+dateLabel+(isToday?' <span class="owner-chip">today</span>':'')+'</div>'+
         '<div class="map-preview-route-name">'+escapeHtml(r.name)+(r.completed?' <span class="stamp visited-in-person">Done</span>':'')+'</div>'+
-        '<div class="addr">'+stops.length+' stop'+(stops.length===1?'':'s')+
-          (stops.length ? ': '+stops.slice(0,2).map(a=>escapeHtml(a.name)).join(', ')+(stops.length>2?'…':'') : '')+
-        '</div>'+
       '</div>';
-    });
-  }
+    if(active){
+      html += '<div class="addr" style="margin:2px 0 4px;">Drag a stop onto another date to move it, or use the dropdown.</div>';
+      html += '<ul class="map-preview-stop-list">';
+      stops.forEach(({agency:a, index}) => {
+        html += '<li class="map-preview-stop-row" draggable="true" data-route-id="'+r.id+'" data-index="'+index+'">'+
+          '<span class="drag-handle">::</span>'+
+          '<div class="stop-body" style="min-width:0;"><div class="stop-name">'+escapeHtml(a.name)+'</div></div>'+
+          '<select class="mono" style="font-size:11px;padding:3px 4px;" data-action="move-stop-to-route" data-source-route="'+r.id+'" data-index="'+index+'">'+
+            '<option value="">Move to…</option>'+
+            sorted.filter(other=>other.id!==r.id).map(other => {
+              const d = new Date(other.date+'T00:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'});
+              return '<option value="'+other.id+'">'+d+' — '+escapeHtml(other.name)+'</option>';
+            }).join('')+
+          '</select>'+
+        '</li>';
+      });
+      if(stops.length === 0) html += '<li class="addr" style="padding:6px 0;">No stops yet — drag one in from another date.</li>';
+      html += '</ul>';
+    } else {
+      html += '<div class="addr">'+stops.length+' stop'+(stops.length===1?'':'s')+
+        (stops.length ? ': '+stops.slice(0,2).map(x=>escapeHtml(x.agency.name)).join(', ')+(stops.length>2?'…':'') : '')+
+      '</div>';
+    }
+    html += '</div>';
+  });
   html += '</div></div>';
   return html;
+}
+
+let mapDragPayload = null;
+function setupMapPreviewDragDrop(){
+  document.querySelectorAll('.map-preview-item[data-route-drop]').forEach(card => {
+    const routeId = card.dataset.routeDrop;
+    card.addEventListener('dragover', (e) => { e.preventDefault(); });
+    card.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if(!mapDragPayload) return;
+      moveStopBetweenRoutes(mapDragPayload.sourceRouteId, mapDragPayload.sourceIndex, routeId, null);
+      mapDragPayload = null;
+    });
+  });
+  document.querySelectorAll('.map-preview-stop-row[draggable="true"]').forEach(row => {
+    row.addEventListener('dragstart', () => {
+      mapDragPayload = { sourceRouteId: row.dataset.routeId, sourceIndex: parseInt(row.dataset.index,10) };
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => row.classList.remove('dragging'));
+    row.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); });
+    row.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if(!mapDragPayload) return;
+      moveStopBetweenRoutes(mapDragPayload.sourceRouteId, mapDragPayload.sourceIndex, row.dataset.routeId, parseInt(row.dataset.index,10));
+      mapDragPayload = null;
+    });
+  });
+}
+
+// Moves a single stop from one route to another (or reorders within the same
+// route), keeping the drop position — this is the one source of truth every
+// other page reads from, so the move is reflected everywhere automatically.
+function moveStopBetweenRoutes(sourceRouteId, sourceIndex, targetRouteId, targetIndex){
+  const sourceRoute = state.routes.find(r => r.id === sourceRouteId);
+  const targetRoute = state.routes.find(r => r.id === targetRouteId);
+  if(!sourceRoute || !targetRoute) return;
+  if(sourceRoute === targetRoute && sourceIndex === targetIndex) return;
+  const moved = sourceRoute.stops[sourceIndex];
+  if(!moved) return;
+  sourceRoute.stops.splice(sourceIndex, 1);
+  let insertAt = targetIndex;
+  if(insertAt == null) insertAt = targetRoute.stops.length;
+  else if(sourceRoute === targetRoute && sourceIndex < insertAt) insertAt--;
+  targetRoute.stops.splice(insertAt, 0, moved);
+  delete state.driveTimeCache[sourceRouteId];
+  delete state.driveTimeCache[targetRouteId];
+  saveRoutes();
+  captureMapView();
+  render();
+  const label = targetRoute.date ? new Date(targetRoute.date+'T00:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'}) : targetRoute.name;
+  showToast(sourceRoute===targetRoute ? 'Reordered' : 'Moved to '+label);
 }
 
 function updateRouteBuilderPanel(){
@@ -2274,11 +2611,28 @@ function attachGlobalListeners(){
   if(csvInput) csvInput.onchange = (e) => { if(e.target.files[0]) handleCsvFile(e.target.files[0]); e.target.value=''; };
   setupDragReorder();
   if(state.tab === 'map' && document.getElementById('agency-map')) initMapView();
+  if(state.tab === 'map') setupMapPreviewDragDrop();
 }
 
 function onGlobalChange(e){
   const t = e.target;
   if(t.id === 'dash-year'){ state.dashboardYear = parseInt(t.value,10); render(); }
+  if(t.dataset && t.dataset.action === 'move-stop-to-route'){
+    if(t.value){
+      moveStopBetweenRoutes(t.dataset.sourceRoute, parseInt(t.dataset.index,10), t.value, null);
+    }
+    return;
+  }
+  if(t.dataset && t.dataset.action === 'rename-segment'){
+    const seg = segmentById(t.dataset.id);
+    if(seg){ seg.name = t.value.trim() || 'Untitled segment'; seg.auto = false; saveSegments(); }
+    return;
+  }
+  if(t.dataset && t.dataset.action === 'move-agency-segment'){
+    const a = agencyById(t.dataset.id);
+    if(a){ a.segmentId = t.value || null; a.segmentLocked = true; saveAgencies(); render(); }
+    return;
+  }
   if(t.id === 'map-route-date'){
     const daySelect = document.getElementById('map-route-day');
     if(daySelect && t.value) daySelect.value = weekdayNameForDateStr(t.value);
@@ -2367,6 +2721,29 @@ function onGlobalClick(e){
   else if(action === 'pick-csv'){ document.getElementById('csv-input').click(); }
   else if(action === 'new-agency'){ openAgencyModal(null); }
   else if(action === 'set-agency-scope'){ state.agencyViewScope = btn.dataset.scope; render(); }
+  else if(action === 'set-agency-view-mode'){ state.agencyViewMode = btn.dataset.mode; render(); }
+  else if(action === 'rebuild-segments'){
+    const val = parseInt(document.getElementById('segment-target-size').value, 10);
+    state.settings.segmentTargetSize = (isFinite(val) && val > 0) ? val : 10;
+    saveSettings();
+    rebuildSegments();
+  }
+  else if(action === 'new-segment'){
+    const name = 'New segment';
+    state.segments.push({ id: uid(), name, auto:false });
+    saveSegments();
+    render();
+  }
+  else if(action === 'delete-segment'){
+    showConfirmModal('Delete this segment? Its agencies will become unassigned, not deleted.', function(){
+      state.agencies.forEach(a => { if(a.segmentId === id){ a.segmentId = null; a.segmentLocked = false; } });
+      state.segments = state.segments.filter(s => s.id !== id);
+      saveAgencies(); saveSegments();
+      document.getElementById('modal-root').innerHTML = '';
+      render();
+      showToast('Segment deleted');
+    });
+  }
   else if(action === 'set-map-scope'){ state.mapViewScope = btn.dataset.scope; render(); }
   else if(action === 'highlight-map-route'){
     state.mapHighlightedRouteId = state.mapHighlightedRouteId === id ? null : id;
@@ -2378,6 +2755,14 @@ function onGlobalClick(e){
     const list = (scope === 'all' ? state.agencies : myAgencies()).filter(a => a.address);
     list.forEach(a => { if(a.lat==null || a.lon==null) delete a.geocodeFailed; });
     initMapView();
+  }
+  else if(action === 'refresh-agency-locations'){
+    showConfirmModal('Re-locate every one of your agencies from scratch? This clears cached map positions and looks them all up again — useful if an address was corrected but its pin didn\u2019t move.', function(){
+      myAgencies().forEach(a => { delete a.lat; delete a.lon; delete a.geocodeFailed; });
+      saveAgencies();
+      document.getElementById('modal-root').innerHTML = '';
+      render();
+    });
   }
   else if(action === 'toggle-map-build'){ captureMapView(); state.mapBuildMode = true; state.mapSelectedIds = []; render(); }
   else if(action === 'cancel-map-build'){ captureMapView(); state.mapBuildMode = false; state.mapSelectedIds = []; render(); }
@@ -2428,10 +2813,19 @@ function onGlobalClick(e){
     if(id){
       const a = agencyById(id);
       const addressChanged = a.address !== address;
+      const prevLat = a.lat, prevLon = a.lon;
       Object.assign(a, {name,address,principal,phone,markerShape});
       if(markerColor) a.markerColor = markerColor; else delete a.markerColor;
-      if(lat!=null && lon!=null){ a.lat = lat; a.lon = lon; delete a.geocodeFailed; }
-      else if(addressChanged){ delete a.lat; delete a.lon; delete a.geocodeFailed; } // re-geocode next time — old coords no longer match
+      // The lat/lng fields are pre-filled with the agency's current coordinates for
+      // convenience, so their presence alone doesn't mean the user meant to override
+      // them — only treat them as an intentional override if they were actually
+      // changed, or if the address wasn't touched (so the old coordinates still apply).
+      const coordsEditedByUser = (lat !== prevLat) || (lon !== prevLon);
+      if(lat!=null && lon!=null && (coordsEditedByUser || !addressChanged)){
+        a.lat = lat; a.lon = lon; delete a.geocodeFailed;
+      } else if(addressChanged){
+        delete a.lat; delete a.lon; delete a.geocodeFailed; // re-geocode next time — old coords no longer match
+      }
     } else {
       const agency = {id:uid(), name, address, principal, phone, markerShape, ownerId: state.currentRepId, createdAt:new Date().toISOString()};
       if(markerColor) agency.markerColor = markerColor;
