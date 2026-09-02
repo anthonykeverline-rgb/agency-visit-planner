@@ -32,6 +32,8 @@
     --route-soft:#EDE6FB;
     --route-dark:#5A34B8;
     --visited:#C98A1B;
+    --confirmed:#1E8E3E;
+    --confirmed-soft:#DCF0E3;
     --visited-soft:#F6E7C9;
     --pending:#B23B3B;
     --pending-soft:#F5DEDC;
@@ -1614,7 +1616,7 @@ function renderRoutesTab(){
 }
 
 function renderRouteCard(r){
-  const stopAgencies = r.stops.map(s => ({ agency: agencyById(s.agencyId), time: s.time })).filter(x => x.agency);
+  const stopAgencies = r.stops.map((s,i) => ({ agency: agencyById(s.agencyId), time: s.time, confirmed: !!s.confirmed, index:i })).filter(x => x.agency);
   const year = state.dashboardYear;
   const dt = state.driveTimeCache[r.id];
 
@@ -1637,11 +1639,15 @@ function renderRouteCard(r){
     stopAgencies.forEach((s,i) => {
       const a = s.agency;
       const visited = visitsForAgencyYear(a.id, year).length > 0;
-      html += '<li class="stop-item">'+
+      html += '<li class="stop-item'+(s.confirmed?' stop-item-confirmed':'')+'">'+
         '<span class="stop-num">'+(i+1)+'.</span>'+
         '<span class="dot '+(visited?'visited-in-person':'pending')+'" title="'+(visited?'Visited this year':'Not visited this year')+'"></span>'+
         '<div class="stop-body"><div class="stop-name">'+escapeHtml(a.name)+'</div><div class="stop-addr">'+escapeHtml(a.address)+'</div></div>'+
         (s.time ? '<span class="time-chip">'+formatTime(s.time)+'</span>' : '')+
+        '<label class="confirm-check" title="Appointment confirmed">'+
+          '<input type="checkbox" data-action="toggle-stop-confirmed" data-route-id="'+r.id+'" data-index="'+s.index+'" '+(s.confirmed?'checked':'')+'>'+
+          '<span>Confirmed</span>'+
+        '</label>'+
         '<button class="ghost sm" data-action="mark-visited" data-id="'+a.id+'">Log</button>'+
       '</li>';
       if(i < stopAgencies.length-1){
@@ -1765,7 +1771,7 @@ function renderRouteEditor(){
     r.stops.forEach((stop,i) => {
       const a = agencyById(stop.agencyId);
       if(!a) return;
-      html += '<li class="stop-item" draggable="true" data-index="'+i+'">'+
+      html += '<li class="stop-item'+(stop.confirmed?' stop-item-confirmed':'')+'" draggable="true" data-index="'+i+'">'+
         '<span class="drag-handle">::</span>'+
         '<span class="stop-num">'+(i+1)+'.</span>'+
         '<div class="stop-body"><div class="stop-name">'+escapeHtml(a.name)+'</div><div class="stop-addr">'+escapeHtml(a.address)+'</div></div>'+
@@ -1773,6 +1779,10 @@ function renderRouteEditor(){
           '<option value="">No time set</option>'+
           TIME_OPTIONS.map(t=>'<option value="'+t.value+'" '+(stop.time===t.value?'selected':'')+'>'+t.label+'</option>').join('')+
         '</select>'+
+        '<label class="confirm-check" title="Appointment confirmed">'+
+          '<input type="checkbox" data-action="toggle-stop-confirmed" data-route-id="'+r.id+'" data-index="'+i+'" '+(stop.confirmed?'checked':'')+'>'+
+          '<span>Confirmed</span>'+
+        '</label>'+
         '<button class="ghost sm" data-action="move-stop-up" data-index="'+i+'" '+(i===0?'disabled':'')+'>&uarr;</button>'+
         '<button class="ghost sm" data-action="move-stop-down" data-index="'+i+'" '+(i===r.stops.length-1?'disabled':'')+'>&darr;</button>'+
         '<button class="ghost sm" data-action="remove-stop" data-index="'+i+'">Remove</button>'+
@@ -2532,6 +2542,7 @@ function openAgencyModal(agencyId){
         '<div class="field" style="flex:1;"><label>Latitude</label><input type="text" id="f-lat" value="'+(editing&&editing.lat!=null?editing.lat:'')+'" placeholder="e.g. 29.7604"></div>'+
         '<div class="field" style="flex:1;"><label>Longitude</label><input type="text" id="f-lon" value="'+(editing&&editing.lon!=null?editing.lon:'')+'" placeholder="e.g. -95.3698"></div>'+
       '</div>'+
+      (editing && editing.manualCoords ? '<div class="addr" style="margin-top:-4px;margin-bottom:8px;">\u2713 Manually set — the Map tab\u2019s "Refresh locations" button won\u2019t touch these. Clear both fields and save to remove the override.</div>' : '')+
       '<div class="section-label">Map pin</div>'+
       '<div class="addr" style="margin-bottom:8px;">By default, pins are colored automatically — yellow while on an open (not-yet-completed) route, amber if visited this year, red if not. Override the shape or color here to flag an agency specially — a star for VIP accounts, or a policy-type icon like umbrella, boat, or RV.</div>'+
       '<div class="row">'+
@@ -2574,8 +2585,10 @@ function openVisitModal(agencyId){
   '</div>';
 }
 let pendingConfirmYes = null;
-function showConfirmModal(message, onYes){
+function showConfirmModal(message, onYes, confirmLabel, dangerous){
   pendingConfirmYes = onYes;
+  const label = confirmLabel || 'Delete';
+  const isDangerous = dangerous !== false; // defaults to true for backward compatibility with existing delete callers
   const root = document.getElementById('modal-root');
   root.innerHTML = '<div class="modal-backdrop">'+
     '<div class="modal" style="max-width:360px;">'+
@@ -2583,7 +2596,7 @@ function showConfirmModal(message, onYes){
       '<div class="addr" style="font-size:13px;margin-bottom:4px;">'+escapeHtml(message)+'</div>'+
       '<div class="modal-actions">'+
         '<button data-action="confirm-no">Cancel</button>'+
-        '<button class="danger" data-action="confirm-yes">Delete</button>'+
+        '<button class="'+(isDangerous?'danger':'primary')+'" data-action="confirm-yes">'+escapeHtml(label)+'</button>'+
       '</div>'+
     '</div>'+
   '</div>';
@@ -2757,12 +2770,17 @@ function onGlobalClick(e){
     initMapView();
   }
   else if(action === 'refresh-agency-locations'){
-    showConfirmModal('Re-locate every one of your agencies from scratch? This clears cached map positions and looks them all up again — useful if an address was corrected but its pin didn\u2019t move.', function(){
-      myAgencies().forEach(a => { delete a.lat; delete a.lon; delete a.geocodeFailed; });
+    showConfirmModal('Re-locate agencies from scratch? This clears cached map positions that were found automatically and looks them up again — useful if an address was corrected but its pin didn\u2019t move. Coordinates you entered manually are left untouched.', function(){
+      let cleared = 0;
+      myAgencies().forEach(a => {
+        if(!a.manualCoords){ delete a.lat; delete a.lon; delete a.geocodeFailed; cleared++; }
+      });
       saveAgencies();
       document.getElementById('modal-root').innerHTML = '';
+      mapViewLoading = false; // don't let a stuck/in-progress load block this refresh from starting
       render();
-    });
+      showToast(cleared ? 'Re-locating '+cleared+' agenc'+(cleared===1?'y':'ies')+'…' : 'All your agencies already have manually-set coordinates');
+    }, 'Refresh', false);
   }
   else if(action === 'toggle-map-build'){ captureMapView(); state.mapBuildMode = true; state.mapSelectedIds = []; render(); }
   else if(action === 'cancel-map-build'){ captureMapView(); state.mapBuildMode = false; state.mapSelectedIds = []; render(); }
@@ -2819,17 +2837,23 @@ function onGlobalClick(e){
       // The lat/lng fields are pre-filled with the agency's current coordinates for
       // convenience, so their presence alone doesn't mean the user meant to override
       // them — only treat them as an intentional override if they were actually
-      // changed, or if the address wasn't touched (so the old coordinates still apply).
+      // changed. That distinction also decides whether "Refresh locations" is
+      // allowed to touch these coordinates later — manual ones are left alone.
       const coordsEditedByUser = (lat !== prevLat) || (lon !== prevLon);
-      if(lat!=null && lon!=null && (coordsEditedByUser || !addressChanged)){
-        a.lat = lat; a.lon = lon; delete a.geocodeFailed;
+      const coordsFieldsCleared = !latRaw && !lonRaw;
+      if(lat!=null && lon!=null && coordsEditedByUser){
+        a.lat = lat; a.lon = lon; a.manualCoords = true; delete a.geocodeFailed;
+      } else if(coordsFieldsCleared && coordsEditedByUser){
+        delete a.lat; delete a.lon; delete a.geocodeFailed; a.manualCoords = false;
+      } else if(lat!=null && lon!=null && !addressChanged){
+        a.lat = lat; a.lon = lon; // untouched, still valid — leave as-is, including manualCoords flag
       } else if(addressChanged){
-        delete a.lat; delete a.lon; delete a.geocodeFailed; // re-geocode next time — old coords no longer match
+        delete a.lat; delete a.lon; delete a.geocodeFailed; a.manualCoords = false; // re-geocode next time — old coords no longer match
       }
     } else {
       const agency = {id:uid(), name, address, principal, phone, markerShape, ownerId: state.currentRepId, createdAt:new Date().toISOString()};
       if(markerColor) agency.markerColor = markerColor;
-      if(lat!=null && lon!=null){ agency.lat = lat; agency.lon = lon; }
+      if(lat!=null && lon!=null){ agency.lat = lat; agency.lon = lon; agency.manualCoords = true; }
       state.agencies.push(agency);
     }
     saveAgencies();
@@ -2930,6 +2954,11 @@ function onGlobalClick(e){
     r.day = document.getElementById('route-day').value;
     r.date = document.getElementById('route-date').value;
     saveRoutes(); showToast('Route details saved'); render();
+  }
+  else if(action === 'toggle-stop-confirmed'){
+    const r = state.routes.find(x=>x.id===btn.dataset.routeId);
+    const i = parseInt(btn.dataset.index,10);
+    if(r && r.stops[i]){ r.stops[i].confirmed = btn.checked; saveRoutes(); render(); }
   }
   else if(action === 'toggle-stop'){
     const r = state.routes.find(x=>x.id===state.editingRouteId);
