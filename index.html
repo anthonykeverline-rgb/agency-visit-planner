@@ -209,6 +209,8 @@
   .calendar-cell-muted{color:var(--muted);background:var(--paper);}
   .calendar-cell-today{border-color:var(--ink);border-width:2px;}
   .calendar-cell-selected{background:var(--route-soft);border-color:var(--route);border-width:2px;}
+  .calendar-cell-dragover{background:var(--confirmed-soft)!important;border-color:var(--confirmed)!important;border-width:2px;}
+  .move-date-input{max-width:128px;font-size:11.5px;padding:4px 5px;flex-shrink:0;}
   .calendar-daynum{font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:14px;}
   .calendar-agency-preview{width:100%;}
   .calendar-agency-line{
@@ -239,6 +241,12 @@
     font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;
     background:var(--route-soft);color:var(--route-dark);padding:3px 8px;border-radius:6px;white-space:nowrap;
   }
+  .stop-item-confirmed{background:var(--confirmed-soft);border-radius:8px;margin:2px 0;padding-left:4px;padding-right:4px;}
+  .confirm-check{
+    display:flex;align-items:center;gap:5px;font-family:'IBM Plex Mono',monospace;font-size:11px;
+    color:var(--confirmed);white-space:nowrap;flex-shrink:0;cursor:pointer;user-select:none;
+  }
+  .confirm-check input{width:15px;height:15px;accent-color:var(--confirmed);cursor:pointer;}
   .drive-seg{
     list-style:none;padding:4px 0 4px 30px;font-size:12px;color:var(--muted);
     border-top:none;display:flex;align-items:center;gap:4px;flex-wrap:wrap;
@@ -355,6 +363,17 @@
     display:flex;align-items:center;gap:6px;padding:6px 0;border-top:1px solid var(--line);cursor:grab;
   }
   .map-preview-stop-row.dragging{opacity:.4;}
+  .map-search-wrap{position:relative;width:100%;}
+  .map-search-wrap .search-input{width:100%;}
+  .map-search-results{
+    position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:20;
+    background:var(--paper-raised);border:1.5px solid var(--line-strong);border-radius:8px;
+    max-height:280px;overflow-y:auto;box-shadow:0 6px 18px rgba(0,0,0,.12);
+  }
+  .map-search-result{padding:9px 12px;border-top:1px solid var(--line);cursor:pointer;}
+  .map-search-result:first-child{border-top:none;}
+  .map-search-result:hover{background:var(--paper);}
+  .map-search-empty{padding:10px 12px;color:var(--muted);font-size:13px;}
   .map-preview-item[data-route-drop]{transition:background .1s;}
 
   .stale-banner{
@@ -1636,10 +1655,14 @@ function renderRouteCard(r){
   if(stopAgencies.length){
     html += '<ul class="stop-list">';
     html += renderHomeLegRow(r, 'start');
+    if(r.date && stopAgencies.length){
+      html += '<li class="addr" style="padding:4px 0 0 30px;">Drag a stop onto a date on the calendar above to move it, or pick a date on the right.</li>';
+    }
     stopAgencies.forEach((s,i) => {
       const a = s.agency;
       const visited = visitsForAgencyYear(a.id, year).length > 0;
-      html += '<li class="stop-item'+(s.confirmed?' stop-item-confirmed':'')+'">'+
+      html += '<li class="stop-item'+(s.confirmed?' stop-item-confirmed':'')+'"'+(r.date?' draggable="true" data-route-id="'+r.id+'" data-index="'+s.index+'"':'')+'>'+
+        (r.date ? '<span class="drag-handle">::</span>' : '')+
         '<span class="stop-num">'+(i+1)+'.</span>'+
         '<span class="dot '+(visited?'visited-in-person':'pending')+'" title="'+(visited?'Visited this year':'Not visited this year')+'"></span>'+
         '<div class="stop-body"><div class="stop-name">'+escapeHtml(a.name)+'</div><div class="stop-addr">'+escapeHtml(a.address)+'</div></div>'+
@@ -1648,6 +1671,7 @@ function renderRouteCard(r){
           '<input type="checkbox" data-action="toggle-stop-confirmed" data-route-id="'+r.id+'" data-index="'+s.index+'" '+(s.confirmed?'checked':'')+'>'+
           '<span>Confirmed</span>'+
         '</label>'+
+        (r.date ? '<input type="date" class="mono move-date-input" title="Move to a different date" data-action="move-stop-to-date" data-route-id="'+r.id+'" data-index="'+s.index+'">' : '')+
         '<button class="ghost sm" data-action="mark-visited" data-id="'+a.id+'">Log</button>'+
       '</li>';
       if(i < stopAgencies.length-1){
@@ -1949,7 +1973,14 @@ function renderMapTab(){
   const list = (scope === 'all' ? state.agencies : myAgencies()).filter(a => a.address);
   const building = state.mapBuildMode;
 
-  let html = '<div class="row-between" style="margin-bottom:14px;">'+
+  let html = '<div class="row-between" style="margin-bottom:10px;">'+
+    '<div class="map-search-wrap">'+
+      '<input type="text" id="map-search-input" class="search-input" placeholder="Search agencies by name or principal…" autocomplete="off">'+
+      '<div id="map-search-results" class="map-search-results" style="display:none;"></div>'+
+    '</div>'+
+  '</div>';
+
+  html += '<div class="row-between" style="margin-bottom:14px;">'+
     '<div class="addr">'+(building ? 'Tap pins to add them to your new route.' : 'Hover a pin for the name, or click it for the full card.')+'</div>'+
     '<div class="row">'+
       '<div class="scope-toggle">'+
@@ -2073,6 +2104,27 @@ function setupMapPreviewDragDrop(){
   });
 }
 
+function setupRoutesCalendarDragDrop(){
+  document.querySelectorAll('.stop-item[draggable="true"][data-route-id]').forEach(row => {
+    row.addEventListener('dragstart', () => {
+      mapDragPayload = { sourceRouteId: row.dataset.routeId, sourceIndex: parseInt(row.dataset.index,10) };
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => row.classList.remove('dragging'));
+  });
+  document.querySelectorAll('.calendar-cell[data-action="select-calendar-date"]').forEach(cell => {
+    cell.addEventListener('dragover', (e) => { e.preventDefault(); cell.classList.add('calendar-cell-dragover'); });
+    cell.addEventListener('dragleave', () => cell.classList.remove('calendar-cell-dragover'));
+    cell.addEventListener('drop', (e) => {
+      e.preventDefault();
+      cell.classList.remove('calendar-cell-dragover');
+      if(!mapDragPayload) return;
+      moveStopToDate(mapDragPayload.sourceRouteId, mapDragPayload.sourceIndex, cell.dataset.date);
+      mapDragPayload = null;
+    });
+  });
+}
+
 // Moves a single stop from one route to another (or reorders within the same
 // route), keeping the drop position — this is the one source of truth every
 // other page reads from, so the move is reflected everywhere automatically.
@@ -2095,6 +2147,21 @@ function moveStopBetweenRoutes(sourceRouteId, sourceIndex, targetRouteId, target
   render();
   const label = targetRoute.date ? new Date(targetRoute.date+'T00:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'}) : targetRoute.name;
   showToast(sourceRoute===targetRoute ? 'Reordered' : 'Moved to '+label);
+}
+
+// Moves a stop to whatever route already exists on a given date, or creates
+// a new route for that date first if there isn't one yet. Used by both the
+// Routes tab's date picker and its calendar drag-and-drop.
+function moveStopToDate(sourceRouteId, sourceIndex, dateStr){
+  const sourceRoute = state.routes.find(r => r.id === sourceRouteId);
+  if(!sourceRoute || !dateStr) return;
+  if(sourceRoute.date === dateStr){ showToast('Already on that date'); return; }
+  let targetRoute = state.routes.find(r => r.ownerId === state.currentRepId && r.date === dateStr);
+  if(!targetRoute){
+    targetRoute = { id: uid(), name:'New route', day: weekdayNameForDateStr(dateStr), date: dateStr, stops:[], ownerId: state.currentRepId };
+    state.routes.push(targetRoute);
+  }
+  moveStopBetweenRoutes(sourceRouteId, sourceIndex, targetRoute.id, null);
 }
 
 function updateRouteBuilderPanel(){
@@ -2207,6 +2274,50 @@ function leafletMarkerIcon(shape, color, selected){
 // Grabs the current map center/zoom right before an action that would
 // otherwise force a re-fit (like toggling "Build a route"), so that view
 // can be restored instead of the map jumping back out to show everything.
+// ---------- map search ----------
+function mapSearchMatches(query){
+  const q = query.trim().toLowerCase();
+  if(!q) return [];
+  const scope = state.mapViewScope;
+  const list = (scope === 'all' ? state.agencies : myAgencies());
+  return list.filter(a =>
+    a.name.toLowerCase().includes(q) || (a.principal||'').toLowerCase().includes(q)
+  ).slice(0, 8);
+}
+function updateMapSearchResults(query){
+  const box = document.getElementById('map-search-results');
+  if(!box) return;
+  if(!query.trim()){ box.innerHTML = ''; box.style.display = 'none'; return; }
+  const matches = mapSearchMatches(query);
+  if(matches.length === 0){
+    box.innerHTML = '<div class="map-search-empty">No matching agencies</div>';
+  } else {
+    box.innerHTML = matches.map(a =>
+      '<div class="map-search-result" data-action="focus-map-agency" data-id="'+a.id+'">'+
+        '<div class="stop-name">'+escapeHtml(a.name)+'</div>'+
+        '<div class="addr">'+(a.principal ? escapeHtml(a.principal)+' &middot; ' : '')+escapeHtml(a.address)+'</div>'+
+      '</div>'
+    ).join('');
+  }
+  box.style.display = 'block';
+}
+function focusAgencyOnMap(agencyId){
+  const a = agencyById(agencyId);
+  const marker = markersByAgencyId[agencyId];
+  if(!marker){
+    showToast(a && a.lat == null ? 'That agency hasn\u2019t been located on the map yet — try "Refresh locations"' : 'That agency isn\u2019t showing on the map right now');
+    return;
+  }
+  if(state.mapProvider === 'leaflet'){
+    mapInstance.setView(marker.getLatLng(), Math.max(mapInstance.getZoom(), 15));
+    marker.openPopup();
+  } else if(state.mapProvider === 'google' && window.google){
+    googleMapInstance.setCenter(marker.getPosition());
+    googleMapInstance.setZoom(Math.max(googleMapInstance.getZoom(), 15));
+    google.maps.event.trigger(marker, 'click');
+  }
+}
+
 function captureMapView(){
   try{
     if(state.mapProvider === 'leaflet' && mapInstance){
@@ -2625,11 +2736,21 @@ function attachGlobalListeners(){
   setupDragReorder();
   if(state.tab === 'map' && document.getElementById('agency-map')) initMapView();
   if(state.tab === 'map') setupMapPreviewDragDrop();
+  if(state.tab === 'routes') setupRoutesCalendarDragDrop();
+  const mapSearchInput = document.getElementById('map-search-input');
+  if(mapSearchInput) mapSearchInput.addEventListener('blur', () => {
+    setTimeout(() => { const box = document.getElementById('map-search-results'); if(box) box.style.display = 'none'; }, 200);
+  });
 }
 
 function onGlobalChange(e){
   const t = e.target;
   if(t.id === 'dash-year'){ state.dashboardYear = parseInt(t.value,10); render(); }
+  if(t.dataset && t.dataset.action === 'move-stop-to-date'){
+    if(t.value) moveStopToDate(t.dataset.routeId, parseInt(t.dataset.index,10), t.value);
+    t.value = '';
+    return;
+  }
   if(t.dataset && t.dataset.action === 'move-stop-to-route'){
     if(t.value){
       moveStopBetweenRoutes(t.dataset.sourceRoute, parseInt(t.dataset.index,10), t.value, null);
@@ -2667,6 +2788,7 @@ function onGlobalChange(e){
 function onGlobalInput(e){
   const t = e.target;
   if(t.id === 'agency-search'){ state.agencySearch = t.value; render(); document.getElementById('agency-search').focus(); document.getElementById('agency-search').setSelectionRange(t.value.length,t.value.length); }
+  if(t.id === 'map-search-input'){ updateMapSearchResults(t.value); }
   if(t.id === 'route-agency-search'){
     const q = t.value.toLowerCase();
     document.querySelectorAll('#route-agency-picker .checkbox-row').forEach(row => {
@@ -2768,6 +2890,13 @@ function onGlobalClick(e){
     const list = (scope === 'all' ? state.agencies : myAgencies()).filter(a => a.address);
     list.forEach(a => { if(a.lat==null || a.lon==null) delete a.geocodeFailed; });
     initMapView();
+  }
+  else if(action === 'focus-map-agency'){
+    focusAgencyOnMap(id);
+    const box = document.getElementById('map-search-results');
+    const input = document.getElementById('map-search-input');
+    if(box) box.style.display = 'none';
+    if(input) input.value = '';
   }
   else if(action === 'refresh-agency-locations'){
     showConfirmModal('Re-locate agencies from scratch? This clears cached map positions that were found automatically and looks them up again — useful if an address was corrected but its pin didn\u2019t move. Coordinates you entered manually are left untouched.', function(){
