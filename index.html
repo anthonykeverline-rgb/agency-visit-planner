@@ -59,7 +59,7 @@
   h1,h2,h3{font-family:'Space Grotesk',sans-serif;margin:0;color:var(--ink);}
   .mono{font-family:'IBM Plex Mono',monospace;}
   #app{max-width:1080px;margin:0 auto;padding:0 20px 60px;transition:max-width .15s ease;}
-  #app.map-active{max-width:1700px;}
+  #app.wide-tab{max-width:1700px;}
 
   .topbar{
     display:flex;justify-content:space-between;align-items:flex-end;
@@ -187,6 +187,10 @@
     background:var(--route-soft);color:var(--route-dark);padding:3px 9px;border-radius:999px;
     letter-spacing:.03em;font-weight:600;
   }
+
+  .routes-layout{display:flex;gap:16px;align-items:flex-start;margin-bottom:8px;}
+  .routes-calendar-col{flex:1.3;min-width:0;}
+  .routes-detail-col{flex:1;min-width:360px;max-width:520px;}
 
   .calendar-card{
     border:1.5px solid var(--line-strong);border-radius:var(--radius);
@@ -332,6 +336,23 @@
   }
   .segment-agency-row:first-child{border-top:none;}
   .segment-agency-row select{max-width:112px;flex-shrink:0;}
+
+  .agency-grid{
+    display:grid;grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));
+    gap:14px;align-items:start;
+  }
+  .agency-card{
+    border:1.5px solid var(--line-strong);border-radius:var(--radius);
+    background:var(--paper-raised);overflow:hidden;display:flex;flex-direction:column;
+  }
+  .agency-card-header{
+    display:flex;justify-content:space-between;align-items:flex-start;gap:8px;
+    padding:12px 14px;border-bottom:1px solid var(--line);
+  }
+  .agency-card-body{padding:10px 14px;flex:1;display:flex;flex-direction:column;gap:3px;}
+  .agency-card-footer{
+    display:flex;flex-wrap:wrap;gap:4px;padding:10px 14px;border-top:1px solid var(--line);background:var(--paper);
+  }
   .map-box{
     width:100%;height:70vh;min-height:440px;max-height:800px;border-radius:var(--radius);border:1.5px solid var(--line-strong);
     background:var(--paper-raised);
@@ -384,6 +405,10 @@
   .stale-list li{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;font-size:12.5px;}
   .stale-list li .addr{color:#8a4444;}
 
+  @media (max-width:900px){
+    .routes-layout{flex-direction:column;}
+    .routes-detail-col{min-width:0;max-width:none;width:100%;}
+  }
   @media (max-width:640px){
     #app{padding:0 12px 40px;}
     .topbar{flex-direction:column;align-items:flex-start;gap:10px;padding:20px 16px 16px;margin:0 -12px 0;}
@@ -1268,7 +1293,7 @@ function render(){
   const app = document.getElementById('app');
   if(!state.loaded){ app.innerHTML = '<div style="padding:60px 0;text-align:center;color:var(--muted)">Loading manifest…</div>'; return; }
   if(!currentRep()){ app.innerHTML = renderRepGate(); attachGlobalListeners(); return; }
-  app.classList.toggle('map-active', state.tab === 'map' && state.editingRouteId === null);
+  app.classList.toggle('wide-tab', ['map','agencies','routes'].includes(state.tab) && state.editingRouteId === null);
   app.innerHTML = renderTopbar() + renderTabs() + renderStaleBanner() + renderBody();
   attachGlobalListeners();
 }
@@ -1517,28 +1542,32 @@ function renderAgenciesListView(){
     return html;
   }
 
-  html += '<div class="table-scroll"><table><thead><tr><th>Agency</th><th>Principal</th><th>Phone</th><th>Last visit</th>'+(scope==='all'?'<th>Rep</th>':'')+'<th></th></tr></thead><tbody>';
+  html += '<div class="agency-grid">';
   list.forEach(a => {
     const lv = lastVisit(a.id);
     const vt = lv ? VISIT_TYPES.find(v=>v.id===lv.type) : null;
     const isMine = a.ownerId === state.currentRepId;
     const owner = repById(a.ownerId);
-    html += '<tr>'+
-      '<td><div class="agency-name">'+escapeHtml(a.name)+'</div><div class="addr">'+escapeHtml(a.address)+'</div></td>'+
-      '<td>'+escapeHtml(a.principal||'—')+'</td>'+
-      '<td class="mono">'+escapeHtml(a.phone||'—')+'</td>'+
-      '<td>'+(lv ? '<span class="stamp '+vt.color+'"><span class="dot '+vt.color+'"></span>'+vt.label+'</span><div class="addr" style="margin-top:4px;">'+new Date(lv.date).toLocaleDateString()+'</div>' : '<span class="stamp pending"><span class="dot pending"></span>not yet visited</span>')+'</td>'+
-      (scope==='all' ? '<td><span class="owner-chip">'+escapeHtml(owner?owner.name:'unclaimed')+'</span></td>' : '')+
-      '<td style="white-space:nowrap;">'+
+    html += '<div class="agency-card">'+
+      '<div class="agency-card-header">'+
+        '<div><div class="agency-name">'+escapeHtml(a.name)+'</div><div class="addr">'+escapeHtml(a.address)+'</div></div>'+
+        (scope==='all' ? '<span class="owner-chip">'+escapeHtml(owner?owner.name:'unclaimed')+'</span>' : '')+
+      '</div>'+
+      '<div class="agency-card-body">'+
+        (a.principal ? '<div class="addr"><b>Principal:</b> '+escapeHtml(a.principal)+'</div>' : '')+
+        (a.phone ? '<div class="addr mono">'+escapeHtml(a.phone)+'</div>' : '')+
+        '<div style="margin-top:6px;">'+(lv ? '<span class="stamp '+vt.color+'"><span class="dot '+vt.color+'"></span>'+vt.label+' &middot; '+new Date(lv.date).toLocaleDateString()+'</span>' : '<span class="stamp pending"><span class="dot pending"></span>not yet visited</span>')+'</div>'+
+      '</div>'+
+      '<div class="agency-card-footer">'+
         (isMine ?
-          ('<button class="ghost sm" data-action="mark-visited" data-id="'+a.id+'">Log visit</button> '+
-           '<button class="ghost sm" data-action="edit-agency" data-id="'+a.id+'">Edit</button> '+
+          ('<button class="ghost sm" data-action="mark-visited" data-id="'+a.id+'">Log visit</button>'+
+           '<button class="ghost sm" data-action="edit-agency" data-id="'+a.id+'">Edit</button>'+
            '<button class="ghost sm" data-action="delete-agency" data-id="'+a.id+'">Delete</button>')
           : '<span class="addr">view only</span>')+
-      '</td>'+
-    '</tr>';
+      '</div>'+
+    '</div>';
   });
-  html += '</tbody></table></div>';
+  html += '</div>';
   return html;
 }
 
@@ -1558,7 +1587,8 @@ function renderRoutesTab(){
     '<div class="addr">Click a date to see the routes assigned to it.</div>'+
   '</div>';
 
-  html += '<div class="calendar-card">'+
+  html += '<div class="routes-layout">';
+  html += '<div class="routes-calendar-col"><div class="calendar-card">'+
     '<div class="calendar-nav">'+
       '<button class="ghost sm" data-action="calendar-prev-month">&larr;</button>'+
       '<div class="calendar-month-label">'+monthLabel+'</div>'+
@@ -1599,15 +1629,16 @@ function renderRoutesTab(){
     });
     html += '</div>';
   });
-  html += '</div>';
+  html += '</div></div>'; // close calendar-card, routes-calendar-col
 
   const selectedDate = new Date(selectedStr+'T00:00:00');
   const selectedLabel = selectedDate.toLocaleDateString(undefined, { weekday:'long', month:'long', day:'numeric', year:'numeric' });
   const selectedRoutes = (routesByDate[selectedStr] || []);
 
-  html += '<div class="row-between" style="margin:20px 0 10px;">'+
-    '<div class="section-label" style="margin:0;">Routes for '+selectedLabel+'</div>'+
-    '<button class="primary sm" data-action="new-route-for-date" data-date="'+selectedStr+'">New route for this date</button>'+
+  html += '<div class="routes-detail-col">';
+  html += '<div class="row-between" style="margin-bottom:10px;">'+
+    '<div class="section-label" style="margin:0;">'+selectedLabel+'</div>'+
+    '<button class="primary sm" data-action="new-route-for-date" data-date="'+selectedStr+'">New route</button>'+
   '</div>';
 
   if(selectedRoutes.length === 0){
@@ -1615,6 +1646,8 @@ function renderRoutesTab(){
   } else {
     selectedRoutes.forEach(r => { html += renderRouteCard(r); });
   }
+  html += '</div>'; // close routes-detail-col
+  html += '</div>'; // close routes-layout
 
   const undated = myRoutes.filter(r => !r.date);
   html += '<div class="row-between" style="margin-top:20px;">'+
@@ -1641,7 +1674,7 @@ function renderRouteCard(r){
 
   let html = '<div class="route-card'+(r.completed?' route-card-completed':'')+'">'+
     '<div class="route-head">'+
-      '<div><div class="route-title">'+escapeHtml(r.name)+(r.completed?' <span class="stamp visited-in-person">Completed</span>':'')+'</div>'+
+      '<div><div class="route-title">'+escapeHtml(r.name)+(r.completed?' <span class="stamp '+((VISIT_TYPES.find(t=>t.id===r.completionType)||{}).color||'visited-in-person')+'">Completed'+(r.completionType?' &middot; '+VISIT_TYPES.find(t=>t.id===r.completionType).label:'')+'</span>':'')+'</div>'+
       '<div class="addr">'+stopAgencies.length+' stop'+(stopAgencies.length===1?'':'s')+(r.date ? ' · '+new Date(r.date+'T00:00:00').toLocaleDateString() : '')+'</div></div>'+
       '<div class="row">'+
         '<span class="day-chip">'+escapeHtml(r.day)+'</span>'+
@@ -2674,6 +2707,27 @@ function openAgencyModal(agencyId){
   document.getElementById('f-name').focus();
 }
 
+function openRouteCompletionModal(routeId){
+  const r = state.routes.find(x => x.id === routeId);
+  if(!r) return;
+  const stopCount = r.stops.length;
+  const dateLabel = r.date ? new Date(r.date+'T00:00:00').toLocaleDateString() : 'today';
+  const root = document.getElementById('modal-root');
+  root.innerHTML = '<div class="modal-backdrop">'+
+    '<div class="modal">'+
+      '<h3>Mark "'+escapeHtml(r.name)+'" completed</h3>'+
+      '<div class="addr" style="margin-bottom:12px;">This logs a visit for '+stopCount+' agenc'+(stopCount===1?'y':'ies')+' on this route, dated '+dateLabel+' — counted toward this year\u2019s coverage. How were these visits conducted?</div>'+
+      '<div class="field"><label>Visit type</label><select id="route-complete-type">'+
+        VISIT_TYPES.map(t=>'<option value="'+t.id+'">'+t.label+'</option>').join('')+
+      '</select></div>'+
+      '<div class="modal-actions">'+
+        '<button data-action="close-modal">Cancel</button>'+
+        '<button class="primary" data-action="confirm-route-completed" data-id="'+routeId+'">Mark completed</button>'+
+      '</div>'+
+    '</div>'+
+  '</div>';
+}
+
 function openVisitModal(agencyId){
   const a = agencyById(agencyId);
   if(!a) return;
@@ -3043,13 +3097,49 @@ function onGlobalClick(e){
   }
   else if(action === 'toggle-route-completed'){
     const r = state.routes.find(x=>x.id===id);
-    if(r){ r.completed = !r.completed; saveRoutes(); render(); showToast(r.completed ? 'Route marked completed' : 'Route reopened'); }
+    if(!r) return;
+    if(r.completed){
+      if(r.completionVisitIds && r.completionVisitIds.length){
+        state.visits = state.visits.filter(v => !r.completionVisitIds.includes(v.id));
+        saveVisits();
+      }
+      r.completed = false;
+      r.completionType = null;
+      r.completionVisitIds = [];
+      saveRoutes();
+      render();
+      showToast('Route reopened — logged visits for it were removed');
+    } else if(r.stops.length === 0){
+      r.completed = true; saveRoutes(); render(); showToast('Route marked completed');
+    } else {
+      openRouteCompletionModal(id);
+    }
+  }
+  else if(action === 'confirm-route-completed'){
+    const r = state.routes.find(x=>x.id===id);
+    if(!r) return;
+    const type = document.getElementById('route-complete-type').value;
+    const visitDate = r.date || toDateStr(new Date());
+    const newVisitIds = [];
+    r.stops.forEach(s => {
+      const v = { id: uid(), agencyId: s.agencyId, date: visitDate, type };
+      state.visits.push(v);
+      newVisitIds.push(v.id);
+    });
+    r.completed = true;
+    r.completionType = type;
+    r.completionVisitIds = newVisitIds;
+    saveVisits();
+    saveRoutes();
+    document.getElementById('modal-root').innerHTML = '';
+    render();
+    showToast('Completed — logged '+newVisitIds.length+' visit'+(newVisitIds.length===1?'':'s')+' for '+new Date(visitDate+'T00:00:00').toLocaleDateString());
   }
   else if(action === 'edit-route'){ state.editingRouteId = id; render(); }
   else if(action === 'close-route-editor'){ state.editingRouteId = null; render(); }
   else if(action === 'duplicate-route'){
     const r = state.routes.find(x=>x.id===id);
-    if(r){ state.routes.push({...r, id:uid(), name:r.name+' (copy)', date:'', completed:false, stops:r.stops.map(s=>({...s}))}); saveRoutes(); render(); showToast('Route duplicated'); }
+    if(r){ state.routes.push({...r, id:uid(), name:r.name+' (copy)', date:'', completed:false, completionType:null, completionVisitIds:[], stops:r.stops.map(s=>({...s}))}); saveRoutes(); render(); showToast('Route duplicated'); }
   }
   else if(action === 'delete-route'){
     showConfirmModal('Delete this route?', function(){
