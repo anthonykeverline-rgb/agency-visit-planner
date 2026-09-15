@@ -2095,8 +2095,13 @@ function renderMapPreviewPanel(){
           '</select>'+
         '</li>';
       });
-      if(stops.length === 0) html += '<li class="addr" style="padding:6px 0;">No stops yet — drag one in from another date.</li>';
+      if(stops.length === 0) html += '<li class="addr" style="padding:6px 0;">No stops yet — drag one in from another date, or add one directly below.</li>';
       html += '</ul>';
+      const addableAgencies = myAgencies().filter(a => !r.stops.some(s => s.agencyId === a.id)).sort((a,b)=>a.name.localeCompare(b.name));
+      html += '<select class="mono" style="font-size:11px;padding:5px 6px;width:100%;margin-top:6px;" data-action="add-agency-to-route" data-route-id="'+r.id+'">'+
+        '<option value="">+ Add agency directly…</option>'+
+        addableAgencies.map(a => '<option value="'+a.id+'">'+escapeHtml(a.name)+'</option>').join('')+
+      '</select>';
     } else {
       html += '<div class="addr">'+stops.length+' stop'+(stops.length===1?'':'s')+
         (stops.length ? ': '+stops.slice(0,2).map(x=>escapeHtml(x.agency.name)).join(', ')+(stops.length>2?'…':'') : '')+
@@ -2180,6 +2185,20 @@ function moveStopBetweenRoutes(sourceRouteId, sourceIndex, targetRouteId, target
   render();
   const label = targetRoute.date ? new Date(targetRoute.date+'T00:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'}) : targetRoute.name;
   showToast(sourceRoute===targetRoute ? 'Reordered' : 'Moved to '+label);
+}
+
+// Adds an agency directly to a route's stops — for agencies that aren't on
+// any route yet, as opposed to moving one that's already assigned somewhere.
+function addAgencyToRoute(routeId, agencyId){
+  const r = state.routes.find(x => x.id === routeId);
+  const a = agencyById(agencyId);
+  if(!r || !a) return;
+  if(r.stops.some(s => s.agencyId === agencyId)){ showToast('Already on this route'); return; }
+  r.stops.push({ agencyId, time:'' });
+  delete state.driveTimeCache[routeId];
+  saveRoutes();
+  render();
+  showToast(a.name+' added to '+(r.date ? new Date(r.date+'T00:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'}) : r.name));
 }
 
 // Moves a stop to whatever route already exists on a given date, or creates
@@ -2800,6 +2819,11 @@ function attachGlobalListeners(){
 function onGlobalChange(e){
   const t = e.target;
   if(t.id === 'dash-year'){ state.dashboardYear = parseInt(t.value,10); render(); }
+  if(t.dataset && t.dataset.action === 'add-agency-to-route'){
+    if(t.value) addAgencyToRoute(t.dataset.routeId, t.value);
+    t.value = '';
+    return;
+  }
   if(t.dataset && t.dataset.action === 'move-stop-to-date'){
     if(t.value) moveStopToDate(t.dataset.routeId, parseInt(t.dataset.index,10), t.value);
     t.value = '';
