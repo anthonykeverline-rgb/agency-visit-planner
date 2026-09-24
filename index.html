@@ -173,6 +173,14 @@
   .modal h3{font-size:16px;margin-bottom:14px;}
   .modal .field{margin-bottom:12px;}
   .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;}
+  .route-complete-list{max-height:300px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;margin-bottom:4px;}
+  .route-complete-row{
+    display:flex;justify-content:space-between;align-items:center;gap:10px;
+    padding:9px 12px;border-top:1px solid var(--line);
+  }
+  .route-complete-row:first-child{border-top:none;}
+  .route-complete-row .stop-name{font-size:13px;min-width:0;}
+  .route-complete-row select{flex-shrink:0;font-size:12px;padding:4px 5px;}
 
   .route-card{
     border:1.5px solid var(--line-strong);border-radius:var(--radius);
@@ -231,7 +239,11 @@
   .stop-list{list-style:none;margin:12px 0 0;padding:0;}
   .stop-item{
     display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line);
+    flex-wrap:wrap;row-gap:6px;
   }
+  .stop-item .stop-body{flex:1 1 100%;order:1;min-width:0;}
+  .stop-item .drag-handle,.stop-item .stop-num{order:0;}
+  .stop-item select,.stop-item button,.stop-item .confirm-check,.stop-item input[type="date"]{order:2;}
   .stop-num{
     font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--muted);
     width:20px;flex-shrink:0;
@@ -426,10 +438,6 @@
     button{min-height:38px;}
     .row-between{align-items:stretch;}
     .search-input{min-width:0;width:100%;}
-    .stop-item{flex-wrap:wrap;}
-    .stop-item .stop-body{flex:1 1 100%;order:1;}
-    .stop-item .drag-handle,.stop-item .stop-num{order:0;}
-    .stop-item select,.stop-item button{order:2;}
     .drive-seg{padding-left:4px;}
     .map-box{height:380px;min-height:0;max-height:none;}
     .map-layout{flex-direction:column;align-items:stretch;}
@@ -498,6 +506,13 @@ const VISIT_TYPES = [
   {id:'in-person', label:'In person', color:'visited-in-person'},
   {id:'virtual', label:'Virtual', color:'visited-virtual'},
   {id:'phone', label:'Phone call', color:'visited-phone'}
+];
+// Per-stop selector while building a route — deliberately just these two,
+// separate from VISIT_TYPES (used by the general "Log visit" flow elsewhere,
+// which also offers phone).
+const STOP_VISIT_TYPES = [
+  {id:'in-person', label:'In person', color:'visited-in-person'},
+  {id:'virtual', label:'Virtual', color:'visited-virtual'}
 ];
 const TIME_OPTIONS = (function(){
   const out = [];
@@ -920,6 +935,23 @@ function googleMapsUrlMultiStop(addresses){
   let url = 'https://www.google.com/maps/dir/?api=1&origin=' + encodeURIComponent(origin) + '&destination=' + encodeURIComponent(destination);
   if(waypoints) url += '&waypoints=' + waypoints;
   return url;
+}
+
+// On mobile (or when installed as a home-screen app), opening a maps link in
+// a new tab/window leaves a blank one behind after the OS hands off to the
+// native Maps app — the person has to manually close it to get back. Using
+// the same tab avoids that entirely: the OS still intercepts the navigation
+// and opens the native app, but the browser tab underneath is untouched.
+// On a normal desktop browser (no native app to intercept), a new tab is
+// still the right call so the person doesn't lose their place in the app.
+function openMapsUrl(url){
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const isStandalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+  if(isMobile || isStandalone){
+    window.location.href = url;
+  } else {
+    window.open(url, '_blank');
+  }
 }
 function verifyOnMapUrl(address){
   return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(address);
@@ -1667,14 +1699,25 @@ function renderRoutesTab(){
   return html;
 }
 
+function routeCompletionSummary(r){
+  if(!r.stops.length) return { color:'visited-in-person', label:'' };
+  const types = r.stops.map(s => s.visitType || 'in-person');
+  const allSame = types.every(t => t === types[0]);
+  if(allSame){
+    const t = STOP_VISIT_TYPES.find(x => x.id === types[0]) || STOP_VISIT_TYPES[0];
+    return { color: t.color, label: ' &middot; '+t.label };
+  }
+  return { color:'visited-in-person', label:' &middot; Mixed' };
+}
+
 function renderRouteCard(r){
-  const stopAgencies = r.stops.map((s,i) => ({ agency: agencyById(s.agencyId), time: s.time, confirmed: !!s.confirmed, index:i })).filter(x => x.agency);
+  const stopAgencies = r.stops.map((s,i) => ({ agency: agencyById(s.agencyId), time: s.time, confirmed: !!s.confirmed, visitType: s.visitType || 'in-person', index:i })).filter(x => x.agency);
   const year = state.dashboardYear;
   const dt = state.driveTimeCache[r.id];
 
   let html = '<div class="route-card'+(r.completed?' route-card-completed':'')+'">'+
     '<div class="route-head">'+
-      '<div><div class="route-title">'+escapeHtml(r.name)+(r.completed?' <span class="stamp '+((VISIT_TYPES.find(t=>t.id===r.completionType)||{}).color||'visited-in-person')+'">Completed'+(r.completionType?' &middot; '+VISIT_TYPES.find(t=>t.id===r.completionType).label:'')+'</span>':'')+'</div>'+
+      '<div><div class="route-title">'+escapeHtml(r.name)+(r.completed?' <span class="stamp '+routeCompletionSummary(r).color+'">Completed'+routeCompletionSummary(r).label+'</span>':'')+'</div>'+
       '<div class="addr">'+stopAgencies.length+' stop'+(stopAgencies.length===1?'':'s')+(r.date ? ' · '+new Date(r.date+'T00:00:00').toLocaleDateString() : '')+'</div></div>'+
       '<div class="row">'+
         '<span class="day-chip">'+escapeHtml(r.day)+'</span>'+
@@ -1704,6 +1747,9 @@ function renderRouteCard(r){
           '<input type="checkbox" data-action="toggle-stop-confirmed" data-route-id="'+r.id+'" data-index="'+s.index+'" '+(s.confirmed?'checked':'')+'>'+
           '<span>Confirmed</span>'+
         '</label>'+
+        '<select class="mono" style="font-size:11px;padding:4px 5px;" title="How this visit was conducted" data-action="set-stop-visit-type" data-route-id="'+r.id+'" data-index="'+s.index+'">'+
+          STOP_VISIT_TYPES.map(t=>'<option value="'+t.id+'" '+(s.visitType===t.id?'selected':'')+'>'+t.label+'</option>').join('')+
+        '</select>'+
         (r.date ? '<input type="date" class="mono move-date-input" title="Move to a different date" data-action="move-stop-to-date" data-route-id="'+r.id+'" data-index="'+s.index+'">' : '')+
         '<button class="ghost sm" data-action="mark-visited" data-id="'+a.id+'">Log</button>'+
       '</li>';
@@ -1840,6 +1886,9 @@ function renderRouteEditor(){
           '<input type="checkbox" data-action="toggle-stop-confirmed" data-route-id="'+r.id+'" data-index="'+i+'" '+(stop.confirmed?'checked':'')+'>'+
           '<span>Confirmed</span>'+
         '</label>'+
+        '<select class="mono" style="font-size:12px;padding:5px 6px;" title="How this visit was conducted" data-action="set-stop-visit-type" data-route-id="'+r.id+'" data-index="'+i+'">'+
+          STOP_VISIT_TYPES.map(t=>'<option value="'+t.id+'" '+((stop.visitType||'in-person')===t.id?'selected':'')+'>'+t.label+'</option>').join('')+
+        '</select>'+
         '<button class="ghost sm" data-action="move-stop-up" data-index="'+i+'" '+(i===0?'disabled':'')+'>&uarr;</button>'+
         '<button class="ghost sm" data-action="move-stop-down" data-index="'+i+'" '+(i===r.stops.length-1?'disabled':'')+'>&darr;</button>'+
         '<button class="ghost sm" data-action="remove-stop" data-index="'+i+'">Remove</button>'+
@@ -2729,16 +2778,24 @@ function openAgencyModal(agencyId){
 function openRouteCompletionModal(routeId){
   const r = state.routes.find(x => x.id === routeId);
   if(!r) return;
-  const stopCount = r.stops.length;
+  const stops = r.stops.map((s,i) => ({ agency: agencyById(s.agencyId), visitType: s.visitType || 'in-person', index:i })).filter(x => x.agency);
   const dateLabel = r.date ? new Date(r.date+'T00:00:00').toLocaleDateString() : 'today';
   const root = document.getElementById('modal-root');
   root.innerHTML = '<div class="modal-backdrop">'+
     '<div class="modal">'+
       '<h3>Mark "'+escapeHtml(r.name)+'" completed</h3>'+
-      '<div class="addr" style="margin-bottom:12px;">This logs a visit for '+stopCount+' agenc'+(stopCount===1?'y':'ies')+' on this route, dated '+dateLabel+' — counted toward this year\u2019s coverage. How were these visits conducted?</div>'+
-      '<div class="field"><label>Visit type</label><select id="route-complete-type">'+
-        VISIT_TYPES.map(t=>'<option value="'+t.id+'">'+t.label+'</option>').join('')+
-      '</select></div>'+
+      '<div class="addr" style="margin-bottom:12px;">This logs a visit for each agency below, dated '+dateLabel+' — counted toward this year\u2019s coverage. Double-check how each one was conducted before saving.</div>'+
+      '<div class="route-complete-list">'+
+        stops.map(s =>
+          '<div class="route-complete-row">'+
+            '<div class="stop-name">'+escapeHtml(s.agency.name)+'</div>'+
+            '<select class="mono" data-index="'+s.index+'">'+
+              STOP_VISIT_TYPES.map(t=>'<option value="'+t.id+'" '+(s.visitType===t.id?'selected':'')+'>'+t.label+'</option>').join('')+
+            '</select>'+
+          '</div>'
+        ).join('')+
+      '</div>'+
+      (stops.length === 0 ? '<div class="addr">No stops on this route.</div>' : '')+
       '<div class="modal-actions">'+
         '<button data-action="close-modal">Cancel</button>'+
         '<button class="primary" data-action="confirm-route-completed" data-id="'+routeId+'">Mark completed</button>'+
@@ -2848,6 +2905,12 @@ function onGlobalChange(e){
   if(t.id === 'map-route-date'){
     const daySelect = document.getElementById('map-route-day');
     if(daySelect && t.value) daySelect.value = weekdayNameForDateStr(t.value);
+  }
+  if(t.dataset && t.dataset.action === 'set-stop-visit-type'){
+    const r = state.routes.find(x=>x.id===t.dataset.routeId);
+    const i = parseInt(t.dataset.index,10);
+    if(r && r.stops[i]){ r.stops[i].visitType = t.value; saveRoutes(); }
+    return;
   }
   if(t.dataset && t.dataset.action === 'set-stop-time'){
     const r = state.routes.find(x=>x.id===state.editingRouteId);
@@ -3142,16 +3205,18 @@ function onGlobalClick(e){
   else if(action === 'confirm-route-completed'){
     const r = state.routes.find(x=>x.id===id);
     if(!r) return;
-    const type = document.getElementById('route-complete-type').value;
     const visitDate = r.date || toDateStr(new Date());
     const newVisitIds = [];
-    r.stops.forEach(s => {
-      const v = { id: uid(), agencyId: s.agencyId, date: visitDate, type };
+    document.querySelectorAll('.route-complete-row select').forEach(sel => {
+      const i = parseInt(sel.dataset.index,10);
+      const stop = r.stops[i];
+      if(!stop) return;
+      stop.visitType = sel.value;
+      const v = { id: uid(), agencyId: stop.agencyId, date: visitDate, type: sel.value };
       state.visits.push(v);
       newVisitIds.push(v.id);
     });
     r.completed = true;
-    r.completionType = type;
     r.completionVisitIds = newVisitIds;
     saveVisits();
     saveRoutes();
@@ -3264,13 +3329,13 @@ function onGlobalClick(e){
     const r = state.routes.find(x=>x.id===id);
     const addresses = r.stops.map(s=>agencyById(s.agencyId)).filter(Boolean).map(a=>a.address);
     if(addresses.length===0){ showToast('Add stops to this route first'); return; }
-    window.open(appleMapsUrlMultiStop(addresses), '_blank');
+    openMapsUrl(appleMapsUrlMultiStop(addresses));
   }
   else if(action === 'export-google'){
     const r = state.routes.find(x=>x.id===id);
     const addresses = r.stops.map(s=>agencyById(s.agencyId)).filter(Boolean).map(a=>a.address);
     if(addresses.length===0){ showToast('Add stops to this route first'); return; }
-    window.open(googleMapsUrlMultiStop(addresses), '_blank');
+    openMapsUrl(googleMapsUrlMultiStop(addresses));
   }
   else if(action === 'copy-stops'){
     const r = state.routes.find(x=>x.id===id);
