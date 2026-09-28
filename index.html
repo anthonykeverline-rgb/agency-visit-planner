@@ -139,6 +139,11 @@
   td{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top;}
   tr:hover td{background:var(--paper);}
   .addr{color:var(--ink-soft);font-size:12.5px;}
+  a.map-link{
+    display:inline-block;text-decoration:none;border-bottom:1px dashed var(--line-strong);
+    cursor:pointer;
+  }
+  a.map-link:hover{color:var(--route);border-bottom-color:var(--route);}
   .agency-name{font-weight:600;}
 
   .stamp{
@@ -956,6 +961,16 @@ function openMapsUrl(url){
 function verifyOnMapUrl(address){
   return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(address);
 }
+// There's no reliable way for a web page to detect whether the Apple Maps
+// app is actually installed — the standard, practical proxy is platform:
+// Apple Maps is only ever available (and only opens natively) on Apple's
+// own devices, so anything else falls back to Google Maps directions.
+function isApplePlatform(){
+  return /iPhone|iPad|iPod|Macintosh/i.test(navigator.userAgent);
+}
+function agencyAddressMapsUrl(address){
+  return isApplePlatform() ? appleMapsUrlSingle(address) : googleMapsUrlMultiStop([address]);
+}
 
 // ---------- geocoding + drive time estimates ----------
 // Uses free public services (OpenStreetMap Nominatim for geocoding, OSRM's demo
@@ -1518,7 +1533,7 @@ function renderAgenciesSegmentsView(){
         const zip = extractZip(a.address);
         html += '<div class="segment-agency-row">'+
           '<div class="stop-body"><div class="stop-name">'+escapeHtml(a.name)+(a.segmentLocked?' <span class="owner-chip">moved</span>':'')+'</div>'+
-          '<div class="stop-addr">'+escapeHtml(zip||a.address)+'</div></div>'+
+          '<a href="'+escapeHtml(agencyAddressMapsUrl(a.address))+'" class="stop-addr map-link" data-action="open-agency-map" data-id="'+a.id+'" title="'+escapeHtml(a.address)+'">'+escapeHtml(zip||a.address)+'</a></div>'+
           '<select class="mono" style="font-size:11.5px;padding:4px 5px;" data-action="move-agency-segment" data-id="'+a.id+'">'+segmentOptions(a.segmentId)+'</select>'+
         '</div>';
       });
@@ -1533,7 +1548,7 @@ function renderAgenciesSegmentsView(){
     html += '<div class="segment-card" style="max-width:420px;"><div class="segment-card-body">';
     unassigned.sort((a,b)=>a.name.localeCompare(b.name)).forEach(a => {
       html += '<div class="segment-agency-row">'+
-        '<div class="stop-body"><div class="stop-name">'+escapeHtml(a.name)+'</div><div class="stop-addr">'+escapeHtml(extractZip(a.address)||a.address)+'</div></div>'+
+        '<div class="stop-body"><div class="stop-name">'+escapeHtml(a.name)+'</div><a href="'+escapeHtml(agencyAddressMapsUrl(a.address))+'" class="stop-addr map-link" data-action="open-agency-map" data-id="'+a.id+'" title="'+escapeHtml(a.address)+'">'+escapeHtml(extractZip(a.address)||a.address)+'</a></div>'+
         '<select class="mono" style="font-size:11.5px;padding:4px 5px;" data-action="move-agency-segment" data-id="'+a.id+'">'+segmentOptions(a.segmentId)+'</select>'+
       '</div>';
     });
@@ -1582,7 +1597,7 @@ function renderAgenciesListView(){
     const owner = repById(a.ownerId);
     html += '<div class="agency-card">'+
       '<div class="agency-card-header">'+
-        '<div><div class="agency-name">'+escapeHtml(a.name)+'</div><div class="addr">'+escapeHtml(a.address)+'</div></div>'+
+        '<div><div class="agency-name">'+escapeHtml(a.name)+'</div><a href="'+escapeHtml(agencyAddressMapsUrl(a.address))+'" class="addr map-link" data-action="open-agency-map" data-id="'+a.id+'">'+escapeHtml(a.address)+'</a></div>'+
         (scope==='all' ? '<span class="owner-chip">'+escapeHtml(owner?owner.name:'unclaimed')+'</span>' : '')+
       '</div>'+
       '<div class="agency-card-body">'+
@@ -3038,6 +3053,11 @@ function onGlobalClick(e){
     const input = document.getElementById('map-search-input');
     if(box) box.style.display = 'none';
     if(input) input.value = '';
+  }
+  else if(action === 'open-agency-map'){
+    e.preventDefault();
+    const a = agencyById(id);
+    if(a) openMapsUrl(agencyAddressMapsUrl(a.address));
   }
   else if(action === 'refresh-agency-locations'){
     showConfirmModal('Re-locate agencies from scratch? This clears cached map positions that were found automatically and looks them up again — useful if an address was corrected but its pin didn\u2019t move. Coordinates you entered manually are left untouched.', function(){
