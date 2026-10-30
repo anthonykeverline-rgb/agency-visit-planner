@@ -178,6 +178,25 @@
   .modal h3{font-size:16px;margin-bottom:14px;}
   .modal .field{margin-bottom:12px;}
   .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;}
+  .modal.modal-wide{max-width:680px;}
+  .reconcile-section{border:1px solid var(--line);border-radius:8px;margin-bottom:8px;background:#fff;}
+  .reconcile-section summary{
+    cursor:pointer;padding:9px 12px;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:13px;
+    display:flex;align-items:center;gap:8px;
+  }
+  .reconcile-list{max-height:220px;overflow-y:auto;padding:0 12px 8px;}
+  .reconcile-row{padding:6px 0;border-top:1px solid var(--line);font-size:12.5px;overflow-wrap:anywhere;}
+  .reconcile-row:first-child{border-top:none;}
+  label.reconcile-pair{
+    display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--line);cursor:pointer;
+    font-size:12.5px;font-family:'Public Sans',sans-serif;text-transform:none;letter-spacing:0;color:var(--ink);margin-bottom:0;
+  }
+  label.reconcile-pair:first-child{border-top:none;}
+  .reconcile-pair input{margin-top:3px;width:16px;height:16px;flex-shrink:0;}
+  .reconcile-report{border-color:var(--route);}
+  .match-pair{border:1px solid var(--line);border-radius:8px;margin-bottom:8px;overflow:hidden;}
+  .match-reasons{padding:6px 10px;background:var(--paper);display:flex;gap:6px;flex-wrap:wrap;}
+  .match-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border-top:1px solid var(--line);font-size:13px;}
   .route-complete-list{max-height:300px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;margin-bottom:4px;}
   .route-complete-row{
     display:flex;justify-content:space-between;align-items:center;gap:10px;
@@ -470,6 +489,7 @@ const state = {
   reps: [],
   segments: [],
   agencyViewMode: 'list', // 'list' | 'segments'
+  reconcileReport: null,
   segmentBuilding: false,
   segmentStatus: '',
   currentRepId: null,
@@ -922,6 +942,325 @@ function handleCsvFile(file){
     },
     error: function(){ showToast('Could not read that file — check it is a CSV.'); }
   });
+}
+
+// ---------- CSV reconcile ----------
+// Syncs the signed-in rep's agency list with a fresh CSV. Agencies are matched
+// by name (ignoring capitalization and punctuation): matches get blanks filled
+// in and conflicting address/phone/principal replaced with the CSV's values,
+// names missing from the CSV are removed, and names new to the system are
+// added. Only the current rep's own agencies are ever touched, and nothing
+// changes until the preview is confirmed.
+let pendingReconcilePlan = null;
+
+function agencyKey(name){
+  return String(name||'').toLowerCase().replace(/&/g,' and ').replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');
+}
+function digitsOnly(s){ return String(s||'').replace(/\D/g,''); }
+function addrKey(s){ return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); }
+
+const NAME_STOPWORDS = new Set(['llc','inc','incorporated','corp','corporation','co','company','agency','agencies','insurance','ins','group','the','and','of','services','service','associates','associate','assoc','assocs']);
+function nameTokens(name){
+  return new Set(String(name||'').toLowerCase().replace(/&/g,' and ').replace(/[^a-z0-9]+/g,' ').split(' ').filter(t => t && !NAME_STOPWORDS.has(t)));
+}
+function streetKey(address){
+  let s = String(address||'').split(',')[0].toLowerCase();
+  s = s.replace(/\b(suite|ste|bldg|building|apt|apartment|unit|fl|floor|rm|room)\b\.?\s*#?\s*[a-z0-9-]*/g,' ')
+       .replace(/#\s*[a-z0-9-]+/g,' ')
+       .replace(/\bstreet\b/g,'st').replace(/\broad\b/g,'rd').replace(/\bavenue\b/g,'ave')
+       .replace(/\bboulevard\b/g,'blvd').replace(/\bdrive\b/g,'dr').replace(/\blane\b/g,'ln')
+       .replace(/\bhighway\b/g,'hwy').replace(/\bparkway\b/g,'pkwy')
+       .replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');
+  return s.length >= 5 ? s : '';
+}
+function matchInfo(o){
+  const d = digitsOnly(o.phone);
+  return { tokens: nameTokens(o.name), phone: d.length >= 10 ? d.slice(-10) : '', street: streetKey(o.address) };
+}
+function reasonsFromInfo(a, b){
+  const r = [];
+  if(a.phone && a.phone === b.phone) r.push('same phone');
+  if(a.street && a.street === b.street) r.push('same street address');
+  if(a.tokens.size && b.tokens.size){
+    let inter = 0;
+    a.tokens.forEach(t => { if(b.tokens.has(t)) inter++; });
+    const union = a.tokens.size + b.tokens.size - inter;
+    if(inter && inter/union >= 0.6) r.push('similar name');
+  }
+  return r;
+}
+function possibleMatchReasons(a, b){ return reasonsFromInfo(matchInfo(a), matchInfo(b)); }
+function findPossibleMatches(list){
+  const infos = list.map(a => ({ a, info: matchInfo(a) }));
+  const out = [];
+  for(let i=0;i<infos.length;i++){
+    for(let j=i+1;j<infos.length;j++){
+      const reasons = reasonsFromInfo(infos[i].info, infos[j].info);
+      if(reasons.length) out.push({ a: infos[i].a, b: infos[j].a, reasons });
+    }
+  }
+  out.sort((x,y) => y.reasons.length - x.reasons.length || x.a.name.localeCompare(y.a.name));
+  return out;
+}
+
+// What would change on an existing agency if the CSV row were applied. Blank
+// CSV cells never erase existing data; a phone that's the same number in a
+// different format isn't treated as a change.
+function diffAgencyAgainstRow(a, row, renameToo){
+  const changes = [];
+  if(renameToo && row.name && row.name !== a.name) changes.push({ field:'name', kind:'renamed', to:row.name });
+  if(row.address){
+    const cur = (a.address||'').trim();
+    if(!cur) changes.push({ field:'address', kind:'filled', to:row.address });
+    else if(addrKey(cur) !== addrKey(row.address)) changes.push({ field:'address', kind:'replaced', to:row.address });
+  }
+  if(row.phone && digitsOnly(row.phone).length >= 7){
+    const cur = (a.phone||'').trim();
+    if(!cur) changes.push({ field:'phone', kind:'filled', to:row.phone });
+    else if(digitsOnly(cur) !== digitsOnly(row.phone)) changes.push({ field:'phone', kind:'replaced', to:row.phone });
+  }
+  if(row.principal){
+    const cur = (a.principal||'').trim();
+    if(!cur) changes.push({ field:'principal', kind:'filled', to:row.principal });
+    else if(cur.toLowerCase() !== row.principal.toLowerCase()) changes.push({ field:'principal', kind:'replaced', to:row.principal });
+  }
+  return changes;
+}
+function applyChangesToAgency(a, changes){
+  changes.forEach(c => {
+    a[c.field] = c.to;
+    if(c.field === 'address'){ delete a.lat; delete a.lon; delete a.geocodeFailed; a.manualCoords = false; } // re-locate on the map
+  });
+}
+
+// Folds a duplicate record into the one being kept: visits and route stops
+// move over so no history is lost, and blank fields are filled from it.
+function mergeAgencies(keepId, dropId){
+  const keep = agencyById(keepId), drop = agencyById(dropId);
+  if(!keep || !drop || keep === drop) return;
+  ['address','phone','principal'].forEach(f => { if(!keep[f] && drop[f]) keep[f] = drop[f]; });
+  state.visits.forEach(v => { if(v.agencyId === dropId) v.agencyId = keepId; });
+  state.routes.forEach(r => {
+    r.stops.forEach(s => { if(s.agencyId === dropId) s.agencyId = keepId; });
+    const seen = new Set();
+    r.stops = r.stops.filter(s => { if(seen.has(s.agencyId)) return false; seen.add(s.agencyId); return true; });
+  });
+  state.agencies = state.agencies.filter(a => a.id !== dropId);
+  state.mapSelectedIds = state.mapSelectedIds.filter(id => id !== dropId);
+}
+// Same cleanup the Delete button does: the agency, its visits, and its route stops.
+function removeAgencyCompletely(id){
+  state.agencies = state.agencies.filter(a => a.id !== id);
+  state.visits = state.visits.filter(v => v.agencyId !== id);
+  state.routes.forEach(r => { r.stops = r.stops.filter(s => s.agencyId !== id); });
+  state.mapSelectedIds = state.mapSelectedIds.filter(x => x !== id);
+}
+
+function buildReconcilePlan(rawRows){
+  const mine = myAgencies();
+  const csvMap = new Map();
+  let skipped = 0, csvDuplicates = 0;
+  rawRows.forEach(raw => {
+    const m = mapRow(raw);
+    const key = agencyKey(m.name);
+    if(!key){ skipped++; return; }
+    if(csvMap.has(key)){
+      csvDuplicates++;
+      const prev = csvMap.get(key);
+      ['name','address','principal','phone'].forEach(f => { if(m[f]) prev[f] = m[f]; }); // later rows win
+    } else {
+      csvMap.set(key, { name:m.name, address:m.address, principal:m.principal, phone:m.phone });
+    }
+  });
+
+  const groups = new Map();
+  mine.forEach(a => {
+    const k = agencyKey(a.name);
+    if(!k) return;
+    if(!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(a);
+  });
+
+  const updates = [], adds = [], removes = [], skippedNoAddress = [];
+  csvMap.forEach((row, key) => {
+    const group = groups.get(key);
+    if(group){
+      updates.push({ agency: group[0], row, dupes: group.slice(1), changes: diffAgencyAgainstRow(group[0], row, false) });
+    } else if(!row.address){
+      skippedNoAddress.push(row.name);
+    } else {
+      adds.push(row);
+    }
+  });
+  groups.forEach((group, key) => { if(!csvMap.has(key)) group.forEach(a => removes.push(a)); });
+
+  // Removed-vs-added look-alikes: probably the same agency under a new name.
+  const candidates = [];
+  removes.forEach((r, ri) => adds.forEach((w, wi) => {
+    const reasons = possibleMatchReasons(r, w);
+    if(reasons.length) candidates.push({ ri, wi, reasons });
+  }));
+  candidates.sort((a,b) => b.reasons.length - a.reasons.length);
+  const usedR = new Set(), usedW = new Set(), pairs = [];
+  candidates.forEach(c => {
+    if(usedR.has(c.ri) || usedW.has(c.wi)) return;
+    usedR.add(c.ri); usedW.add(c.wi); pairs.push(c);
+  });
+
+  return { updates, adds, removes, pairs, skipped, skippedNoAddress, csvDuplicates, csvCount: csvMap.size };
+}
+
+function handleReconcileCsvFile(file){
+  Papa.parse(file, {
+    header:true, skipEmptyLines:true,
+    complete: function(results){
+      const plan = buildReconcilePlan(results.data);
+      if(plan.csvCount === 0){ showToast('No agencies found in that file — check it has a name column'); return; }
+      const changed = plan.updates.filter(u => u.changes.length || u.dupes.length);
+      if(!changed.length && !plan.adds.length && !plan.removes.length){
+        state.reconcileReport = { summary:{ updated:0, filled:0, replaced:0, added:0, removed:0, merged:0, linked:0 }, skipped: plan.skipped + plan.skippedNoAddress.length };
+        state.agencyViewMode = 'list';
+        render();
+        showToast('Already in sync — nothing to change');
+        return;
+      }
+      openReconcilePreviewModal(plan);
+    },
+    error: function(){ showToast('Could not read that file — check it is a CSV.'); }
+  });
+}
+
+function openReconcilePreviewModal(plan){
+  pendingReconcilePlan = plan;
+  const mineCount = myAgencies().length;
+  const changed = plan.updates.filter(u => u.changes.length || u.dupes.length);
+  const unchanged = plan.updates.length - changed.length;
+  const fieldLabel = c => c.kind === 'filled' ? c.field+' filled in' : c.kind === 'replaced' ? c.field+' replaced' : 'name updated';
+  const section = (title, count, open, body) => count
+    ? '<details class="reconcile-section"'+(open?' open':'')+'><summary>'+title+' <span class="owner-chip">'+count+'</span></summary><div class="reconcile-list">'+body+'</div></details>'
+    : '';
+  const describe = o => escapeHtml(o.name)+' <span class="addr">'+escapeHtml([o.address,o.phone].filter(Boolean).join(' \u00b7 '))+'</span>';
+
+  const pairsHtml = plan.pairs.map((p,i) => {
+    const r = plan.removes[p.ri], w = plan.adds[p.wi];
+    return '<label class="reconcile-pair"><input type="checkbox" class="reconcile-pair-check" data-pair="'+i+'">'+
+      '<div><div><b>In your list:</b> '+describe(r)+'</div><div><b>In the CSV:</b> '+describe(w)+'</div>'+
+      '<div style="margin-top:4px;">'+p.reasons.map(x => '<span class="owner-chip">'+x+'</span>').join(' ')+'</div>'+
+      '<div class="addr" style="margin-top:2px;">Check to treat these as the same agency — keeps its visit history and takes on the CSV\u2019s details instead of removing one and adding the other.</div></div></label>';
+  }).join('');
+
+  const removesHtml = plan.removes.map(a => '<div class="reconcile-row">'+describe(a)+'</div>').join('');
+  const updatesHtml = changed.map(u =>
+    '<div class="reconcile-row"><b>'+escapeHtml(u.agency.name)+'</b> <span class="addr">'+
+      [].concat(u.changes.map(fieldLabel), u.dupes.length ? ['merging '+u.dupes.length+' duplicate record'+(u.dupes.length===1?'':'s')] : []).join(' \u00b7 ')+
+    '</span></div>'
+  ).join('');
+  const addsHtml = plan.adds.map(w => '<div class="reconcile-row">'+describe(w)+'</div>').join('');
+  const skippedHtml = plan.skippedNoAddress.map(n => '<div class="reconcile-row">'+escapeHtml(n)+'</div>').join('');
+
+  const bigRemoval = plan.removes.length >= 3 && plan.removes.length * 2 >= mineCount;
+  const notes = [];
+  if(unchanged) notes.push(unchanged+' agenc'+(unchanged===1?'y matches':'ies match')+' the CSV already and won\u2019t change.');
+  if(plan.skipped) notes.push(plan.skipped+' CSV row'+(plan.skipped===1?' without a name was':'s without a name were')+' skipped.');
+  if(plan.csvDuplicates) notes.push(plan.csvDuplicates+' repeated name'+(plan.csvDuplicates===1?'':'s')+' in the CSV were combined (later rows win).');
+
+  const root = document.getElementById('modal-root');
+  root.innerHTML = '<div class="modal-backdrop"><div class="modal modal-wide">'+
+    '<h3>Reconcile with CSV</h3>'+
+    '<div class="addr" style="margin-bottom:10px;">The CSV has <b>'+plan.csvCount+'</b> agencies. Agencies are matched by name (ignoring capitalization and punctuation) and only your own list is changed. Nothing happens until you apply.</div>'+
+    '<div class="row" style="margin-bottom:10px;gap:6px;">'+
+      '<span class="stamp visited-virtual">'+changed.length+' updated</span>'+
+      '<span class="stamp visited-phone">'+plan.adds.length+' added</span>'+
+      '<span class="stamp pending">'+plan.removes.length+' removed</span>'+
+    '</div>'+
+    (plan.removes.length ? '<div class="banner" style="background:var(--pending-soft);border-color:var(--pending);color:#7A2626;">Removing an agency also removes its visit history and route stops.'+
+      (bigRemoval ? ' <b>This would remove '+plan.removes.length+' of your '+mineCount+' agencies — make sure this CSV is your complete list.</b>' : '')+'</div>' : '')+
+    section('Possible same agency — verify', plan.pairs.length, true, pairsHtml)+
+    section('Will be removed', plan.removes.length, true, removesHtml)+
+    section('Will be updated', changed.length, false, updatesHtml)+
+    section('Will be added', plan.adds.length, false, addsHtml)+
+    section('Skipped — new names with no address', plan.skippedNoAddress.length, false, skippedHtml)+
+    (notes.length ? '<div class="addr" style="margin-top:6px;">'+notes.map(escapeHtml).join('<br>')+'</div>' : '')+
+    '<div class="modal-actions"><button data-action="close-modal">Cancel</button><button class="primary" data-action="apply-reconcile">Apply changes</button></div>'+
+  '</div></div>';
+}
+
+function applyReconcilePlan(){
+  const plan = pendingReconcilePlan;
+  if(!plan) return;
+  const linked = new Set(Array.from(document.querySelectorAll('.reconcile-pair-check:checked')).map(el => parseInt(el.dataset.pair,10)));
+  const removeIds = new Set(plan.removes.map(a => a.id));
+  const skipAdd = new Set();
+  const updates = plan.updates.map(u => ({ agency:u.agency, row:u.row, dupes:u.dupes, rename:false }));
+  plan.pairs.forEach((p,i) => {
+    if(!linked.has(i)) return;
+    const agency = plan.removes[p.ri];
+    removeIds.delete(agency.id);
+    skipAdd.add(p.wi);
+    updates.push({ agency, row: plan.adds[p.wi], dupes:[], rename:true });
+  });
+
+  const summary = { updated:0, filled:0, replaced:0, added:0, removed:0, merged:0, linked: linked.size };
+  updates.forEach(u => {
+    u.dupes.forEach(d => { mergeAgencies(u.agency.id, d.id); summary.merged++; });
+    const changes = diffAgencyAgainstRow(u.agency, u.row, u.rename);
+    if(changes.length || u.dupes.length) summary.updated++;
+    changes.forEach(c => { if(c.kind === 'filled') summary.filled++; else if(c.kind === 'replaced') summary.replaced++; });
+    applyChangesToAgency(u.agency, changes);
+  });
+  removeIds.forEach(id => { removeAgencyCompletely(id); summary.removed++; });
+  plan.adds.forEach((row,i) => {
+    if(skipAdd.has(i)) return;
+    state.agencies.push({ id:uid(), name:row.name, address:row.address, principal:row.principal, phone:row.phone, ownerId:state.currentRepId, createdAt:new Date().toISOString() });
+    summary.added++;
+  });
+
+  state.driveTimeCache = {};
+  saveAgencies(); saveVisits(); saveRoutes();
+  pendingReconcilePlan = null;
+  state.reconcileReport = { summary, skipped: plan.skipped + plan.skippedNoAddress.length };
+  state.agencyViewMode = 'list';
+  document.getElementById('modal-root').innerHTML = '';
+  render();
+  showToast('Reconciled — '+summary.updated+' updated, '+summary.added+' added, '+summary.removed+' removed');
+}
+
+// Shown after a reconcile: a summary plus a live check for entries that might
+// be the same agency (same phone, same street address, or a similar name).
+function renderReconcileReport(){
+  const rep = state.reconcileReport;
+  if(!rep) return '';
+  const s = rep.summary;
+  const matches = findPossibleMatches(myAgencies());
+  const shown = matches.slice(0, 40);
+  const agencyLine = a => '<div><b>'+escapeHtml(a.name)+'</b><div class="addr">'+escapeHtml([a.address,a.phone].filter(Boolean).join(' \u00b7 '))+'</div></div>';
+
+  let html = '<div class="card reconcile-report">'+
+    '<div class="row-between"><h3 style="font-size:15px;">Reconcile complete</h3>'+
+      '<button class="ghost sm" data-action="dismiss-reconcile-report">Dismiss</button></div>'+
+    '<div class="row" style="gap:6px;margin:8px 0;">'+
+      '<span class="stamp visited-virtual">'+s.updated+' updated ('+s.filled+' filled in, '+s.replaced+' replaced)</span>'+
+      '<span class="stamp visited-phone">'+s.added+' added</span>'+
+      '<span class="stamp pending">'+s.removed+' removed</span>'+
+      (s.merged ? '<span class="owner-chip">'+s.merged+' duplicate record'+(s.merged===1?'':'s')+' merged</span>' : '')+
+      (s.linked ? '<span class="owner-chip">'+s.linked+' linked as the same agency</span>' : '')+
+    '</div>'+
+    '<div class="section-label" style="margin-top:12px;">Possible matching entries to verify ('+matches.length+')</div>';
+
+  if(!matches.length){
+    html += '<div class="addr">No possible duplicates found — every entry looks distinct.</div>';
+  } else {
+    html += '<div class="addr" style="margin-bottom:8px;">These share a phone number, street address, or a similar name. If two are really the same agency, choose which one to keep — visits and route stops move over to it.'+(matches.length>shown.length?' Showing the strongest '+shown.length+'.':'')+'</div>';
+    shown.forEach(m => {
+      html += '<div class="match-pair">'+
+        '<div class="match-reasons">'+m.reasons.map(x => '<span class="owner-chip">'+x+'</span>').join('')+'</div>'+
+        '<div class="match-row">'+agencyLine(m.a)+'<button class="ghost sm" data-action="keep-agency-merge" data-keep="'+m.a.id+'" data-drop="'+m.b.id+'">Keep this one</button></div>'+
+        '<div class="match-row">'+agencyLine(m.b)+'<button class="ghost sm" data-action="keep-agency-merge" data-keep="'+m.b.id+'" data-drop="'+m.a.id+'">Keep this one</button></div>'+
+      '</div>';
+    });
+  }
+  html += '</div>';
+  return html;
 }
 
 // ---------- map export helpers ----------
@@ -1577,11 +1916,14 @@ function renderAgenciesListView(){
       '<div class="row">'+
         '<label style="display:inline-block;margin:0;"><button class="ghost" data-action="pick-csv">Import CSV</button></label>'+
         '<input type="file" id="csv-input" accept=".csv" style="display:none;">'+
+        '<button class="ghost" data-action="pick-reconcile-csv" title="Sync your list with an updated CSV: update matches, add new, remove missing">Reconcile CSV</button>'+
+        '<input type="file" id="reconcile-csv-input" accept=".csv" style="display:none;">'+
         '<button class="primary" data-action="new-agency">Add agency</button>'+
       '</div>'+
     '</div>'+
-    '<div style="margin-top:10px;" class="addr">CSV columns recognized: name / agency, address, principal / director, phone / telephone — any order, header names are flexible. Imported agencies are added to your own list.</div>'+
+    '<div style="margin-top:10px;" class="addr">CSV columns recognized: name / agency, address, principal / director, phone / telephone — any order, header names are flexible. Imported agencies are added to your own list. <b>Reconcile CSV</b> syncs your list with an updated file: matching names are updated, new names added, and names missing from the file removed (you\u2019ll see a preview first).</div>'+
   '</div>';
+  html += renderReconcileReport();
 
   if(list.length === 0){
     html += '<div class="empty"><div class="empty-title">'+(scope==='all'?'No agencies on file yet':'No agencies in your list yet')+'</div>'+
@@ -2878,6 +3220,8 @@ function attachGlobalListeners(){
   document.body.onchange = onGlobalChange;
   const csvInput = document.getElementById('csv-input');
   if(csvInput) csvInput.onchange = (e) => { if(e.target.files[0]) handleCsvFile(e.target.files[0]); e.target.value=''; };
+  const reconcileInput = document.getElementById('reconcile-csv-input');
+  if(reconcileInput) reconcileInput.onchange = (e) => { if(e.target.files[0]) handleReconcileCsvFile(e.target.files[0]); e.target.value=''; };
   setupDragReorder();
   if(state.tab === 'map' && document.getElementById('agency-map')) initMapView();
   if(state.tab === 'map') setupMapPreviewDragDrop();
@@ -3010,6 +3354,21 @@ function onGlobalClick(e){
   else if(action === 'set-tab'){ state.tab = btn.dataset.tab; state.editingRouteId = null; render(); }
   else if(action === 'close-modal'){ document.getElementById('modal-root').innerHTML=''; }
   else if(action === 'pick-csv'){ document.getElementById('csv-input').click(); }
+  else if(action === 'pick-reconcile-csv'){ document.getElementById('reconcile-csv-input').click(); }
+  else if(action === 'apply-reconcile'){ applyReconcilePlan(); }
+  else if(action === 'dismiss-reconcile-report'){ state.reconcileReport = null; render(); }
+  else if(action === 'keep-agency-merge'){
+    const keep = agencyById(btn.dataset.keep), drop = agencyById(btn.dataset.drop);
+    if(!keep || !drop) return;
+    showConfirmModal('Merge "'+drop.name+'" into "'+keep.name+'"? Visits and route stops move to the one you keep, and the other entry is removed.', function(){
+      mergeAgencies(keep.id, drop.id);
+      state.driveTimeCache = {};
+      saveAgencies(); saveVisits(); saveRoutes();
+      document.getElementById('modal-root').innerHTML = '';
+      render();
+      showToast('Merged');
+    }, 'Merge');
+  }
   else if(action === 'new-agency'){ openAgencyModal(null); }
   else if(action === 'set-agency-scope'){ state.agencyViewScope = btn.dataset.scope; render(); }
   else if(action === 'set-agency-view-mode'){ state.agencyViewMode = btn.dataset.mode; render(); }
